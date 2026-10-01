@@ -96,10 +96,21 @@ export class PolicyEngine {
    */
   scanSecrets(content: string): { safe: boolean; detectedPattern?: string } {
     const patterns = this.policy.invariants?.epistemic_air_gap?.block_patterns || [];
-    for (const pat of patterns) {
-      const reg = new RegExp(pat, 'm');
-      if (reg.test(content)) {
-        return { safe: false, detectedPattern: pat };
+    for (let pat of patterns) {
+      let flags = 'm';
+      if (pat.startsWith('(?i)')) {
+        pat = pat.slice(4);
+        flags += 'i';
+      }
+      try {
+        const reg = new RegExp(pat, flags);
+        if (reg.test(content)) {
+          return { safe: false, detectedPattern: pat };
+        }
+      } catch {
+        if (content.toLowerCase().includes(pat.toLowerCase())) {
+          return { safe: false, detectedPattern: pat };
+        }
       }
     }
     return { safe: true };
