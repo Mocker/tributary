@@ -1,0 +1,10 @@
+{
+  "name": "demo-shop",
+  "version": "1.0.0",
+  "description": "Demo shop microservice with shared session module (Tributary victim repo)",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

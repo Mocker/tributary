@@ -1,106 +1,148 @@
-# OmniGit — Autonomous Multi-Agent Git Platform
+# 🌊 Tributary — Agent-Native Code Collaboration Plane
 
-> **The next-generation version control platform built for the era of AI agents.**  
-> Built natively on **Cloudflare Workers** and **Cloudflare Artifacts**, powered by **PRISM Zero-Trust Agent IAM** and **Anna AGI $T^3RL$ Test-Time Verification**.
+> **"GitHub coordinates humans. Tributary coordinates agents."**  
+> *Target Competition:* Cloudflare Challenge **"Build the next GitHub"**  
+> *Submission Deadline:* **October 14, 2026, 11:59 PM PDT**  
+> *License:* **MIT** (see [LICENSE](LICENSE))
 
 ---
 
 ## ⚡ The Core Problem
 
-Traditional Git platforms (like GitHub and GitLab) were architected for **asynchronous human developers**:
-- **Line-based diffs** lead to merge conflict thrashing when dozens of agents touch the same files.
-- **Binary access controls** (read/write) allow any agent with push access to hallucinate changes into critical infrastructure (`wrangler.jsonc`, CI workflows, database schemas).
-- **Context blindness** causes agents working concurrently to drift out of sync with each other's changes.
-- **Amnesia**: Traditional commit history discards the agent's intent, prompt, thought process, and verification proofs.
+Git’s collaboration primitives — branches, textual 3-way merges, human pull requests — assume **human speed and human judgment**:
+1. **Agents work concurrently at machine speed**: Dozens or hundreds of agent runs colliding on the same files cause massive merge conflict thrashing.
+2. **Agents lose shared context between runs**: As interfaces evolve, agents work on outdated assumptions.
+3. **Review volume explodes**: Agents generate code at a volume no human engineering team can manually review.
+
+**Git finds out about conflicts at merge time. Tributary finds out at claim time.**
 
 ---
 
-## 🚀 The OmniGit Solution
+## 🚀 The Three Pillars of Tributary
 
-OmniGit re-architects version control as an **agent-first coordination plane**:
+```
+agents (any client: scripts, MCP clients, IDE agents)
+   │  HTTPS + git smart-HTTP
+   ▼
+┌─ Tributary Worker (Hono API) ─────────────────────────┐
+│  POST /v1/proposals → fork baseline via Artifacts      │
+│  POST /v1/proposals/:id/claims → overlap check        │
+│  POST /v1/proposals/:id/gates/:g/run → attestation    │
+│  POST /v1/proposals/:id/merge → gated merge           │
+│  GET  /v1/proposals/:id/events (SSE context bus)      │
+│  GET  /v1/learnings · POST /v1/interventions/:id/...  │
+└──────────┬───────────────────────────────┬────────────┘
+           │                               │
+   ┌───────▼────────┐            ┌─────────▼──────────┐
+   │ ChangeProposal │            │ Cloudflare         │
+   │ Durable Object │            │ Artifacts          │
+   │ (one per       │            │ (repos, forks,     │
+   │  proposal:     │            │  git smart-HTTP,   │
+   │  claims, gates,│            │  scoped tokens)    │
+   │  merge state)  │            └────────────────────┘
+   └────────────────┘
+```
 
-1. **Instant Micro-Forks via Cloudflare Artifacts**:  
-   Instead of polluting branches or cloning massive repos, OmniGit spins up isolated, zero-copy programmable micro-forks (`artifacts://repo-task-XYZ`) for every agent task in milliseconds.
-
-2. **PRISM Zero-Trust Agent IAM**:  
-   Every agent micro-fork is minted with fine-grained, path-level access control (e.g., UI agents can only touch `src/ui/**`; schema agents can only modify data models). Any attempt to write to forbidden files or leak secrets is blocked before touching Git.
-
-3. **Anna-Style $T^3RL$ Test-Time Verification Gate**:  
-   No code is merged into `main` without passing automated test proofs. If tests fail, the gate orchestrates automated self-remediation turns.
-
-4. **Real-Time Swarm Presence & Invalidation (Durable Objects)**:  
-   When an agent modifies an exported interface or type contract, the Swarm Coordinator broadcasts real-time invalidation events over WebSockets, preventing peer agents from drifting mid-flight.
-
-5. **Epistemic Memory Crystallization (`.git/learnings/`)**:  
-   Resolved conflicts and verified architectural patterns are automatically crystallized into `.git/learnings/` notes and embedded via Cloudflare Vectorize to guide future agents.
+1. **Prevent conflicts before compute is spent**:  
+   Claim-based intent declaration with semantic overlap detection (paths + symbol mapping via `tributary.symbols.json`). Overlaps are rejected at claim time with actionable 1-sentence explanations.
+2. **Verify by attestation, not human review**:  
+   Verification gates execute deterministic test invariants and emit cryptographically signed HMAC attestations. Merges are gated on passing attestations.
+3. **Make every resolution compound**:  
+   Instructive failures and resolved conflicts crystallize into durable markdown rules in `.git/learnings/` (epistemic memory) stored directly inside the repository.
+4. **Compare-And-Swap (CAS) Protection**:  
+   Guards against race conditions on mainline. If the target ref moved while an agent was running gates, merge returns `409 { code: "ref_moved" }` prompting a clean rebase and re-attestation.
 
 ---
 
 ## 🛠️ Repository Layout
 
 ```text
-omnigit/
-├── policies/
-│   └── default_agent_policy.yaml   # PRISM Zero-Trust YAML policy definitions
+tributary/
+├── docs/
+│   ├── BUILD_PLAN.md               # Complete competition handoff and build plan
+│   ├── decisions.md                # Architectural decisions log (1 line per decision)
+│   ├── artifacts-notes.md          # Cloudflare Artifacts capabilities and verified behavior
+│   └── spikes/
+│       └── phase0-spikes.md        # Fork latency and gate execution spike notes
+├── demo-shop/                      # Demo victim repo (e-commerce API)
+│   ├── tributary.symbols.json      # Symbol-to-file mapping index
+│   ├── src/
+│   │   ├── session.ts              # Shared module trap (auth + billing)
+│   │   ├── auth/login.ts           # Imports session
+│   │   └── billing/checkout.ts     # Imports session
+│   └── test/session.test.ts        # Unit test invariants
 ├── src/
-│   ├── index.ts                     # Edge Hono Worker API & Git HTTP proxy
-│   ├── env.d.ts                     # Cloudflare Workers & Artifacts typings
-│   ├── iam/
-│   │   ├── policy.ts                # Policy engine & path ACL validator
-│   │   └── rules.ts                 # Role definitions & secret scanners
-│   ├── artifacts/
-│   │   └── client.ts                # Cloudflare Artifacts SDK client wrapper
-│   ├── coordinator/
-│   │   ├── swarm-room.ts            # Durable Object managing WebSocket presence
-│   │   └── context-bus.ts           # Real-time AST change broadcaster
-│   ├── arbitration/
-│   │   ├── t3rl-gate.ts             # Test-time verification gate
-│   │   └── ast-merger.ts            # Semantic AST collision resolution
-│   └── memory/
-│       └── crystallizer.ts          # Knowledge note generator (.git/learnings/)
+│   ├── index.ts                    # Main Hono Worker & /v1 API routes
+│   ├── env.d.ts                    # Cloudflare Workers environment typings
+│   ├── types/index.ts              # Core data models (ChangeProposal, Claim, Attestation)
+│   ├── core/
+│   │   ├── overlap.ts              # Path & symbol overlap detection engine
+│   │   ├── attestation.ts          # HMAC-SHA256 signature generator & validator
+│   │   ├── merge-gate.ts           # Gated merge logic with CAS validation
+│   │   └── learnings.ts            # Epistemic memory note generator
+│   └── do/
+│       └── change-proposal.ts      # ChangeProposal Durable Object (single-writer state)
 ├── test/
-│   └── iam.test.ts                  # Deterministic unit tests
+│   ├── overlap.test.ts             # Overlap detection tests
+│   ├── attestation.test.ts         # Cryptographic signing tests
+│   └── merge-gate.test.ts          # Merge gating and CAS tests
 ├── scripts/
-│   └── simulate-swarm.ts            # 5-agent concurrent swarm simulation
-├── wrangler.jsonc                   # Cloudflare Workers configuration
-└── LICENSE                          # Apache-2.0 License
+│   └── run-demo-script.ts          # Rehearses the complete 6-act competition video demo
+├── wrangler.jsonc                  # Cloudflare Workers + Artifacts configuration
+├── LICENSE                         # MIT License
+└── package.json
 ```
 
 ---
 
-## 📦 Getting Started
+## 📦 Run Instructions (For Judges & Developers)
 
 ### 1. Devbox Container Launch
-OmniGit is integrated with Ryan's isolated Devbox container environment:
+
+Tributary is pre-configured with Ryan's isolated Docker Devbox environment:
 
 ```bash
-# Launch dedicated isolated devbox container
-devbox start omnigit -p 8787:8787
+# Launch isolated Devbox container with port 8787 forwarded
+devbox start tributary -p 8787:8787
 
-# Connect to interactive container shell
-devbox shell omnigit
+# Connect to container shell
+devbox shell tributary
 ```
 
-### 2. Local Development (Cloudflare Workers)
-
-Inside the workspace:
+### 2. Run Deterministic Unit Tests
 
 ```bash
-# Install dependencies
-npm install
-
-# Run unit tests
+# Run the pure logic test suite (overlap detection, HMAC attestations, CAS merge gate)
 npm test
+```
 
-# Run the 5-agent swarm simulation
+### 3. Run the Competition Demo Rehearsal
+
+```bash
+# Run the end-to-end 6-act simulation script matching Section 9 of the build plan
 npm run simulate
+```
 
-# Start local Cloudflare Workers dev server
+### 4. Run Cloudflare Workers Dev Server
+
+```bash
+# Start local Hono worker and live Radar UI at http://localhost:8787
 npm run dev
 ```
 
 ---
 
+## 🎬 The 6-Act Competition Demo Summary
+
+1. **Act 1 (Problem)**: Shows how standard Git fails when Agent A and Agent B concurrently edit `src/session.ts` and discover conflicts only at merge time.
+2. **Act 2 (Prevention)**: Agent A claims `src/auth/**` + `createSession`. Agent B attempts to claim `src/session.ts` and receives instant **HTTP 409 Conflict**: *"conflicts with Agent A's claim on src/session.ts (symbol createSession)"*. Zero compute wasted!
+3. **Act 3 (Verification)**: Agent B fixes a bug and runs gate `test`. Fails first, fixes, and passes with signed HMAC attestation.
+4. **Act 4 (Memory)**: Invariant rule is crystallized directly into `.git/learnings/` in the repository.
+5. **Act 5 (Scale)**: Rapid fork latency benchmark demonstrating that fork-per-task in Artifacts enables tens of thousands of concurrent agents.
+6. **Act 6 (Close)**: Core thesis recap — *"GitHub coordinates humans. Tributary coordinates agents."*
+
+---
+
 ## 📄 License
 
-Apache License 2.0. Copyright 2026 Ryan Guthrie.
+MIT License. Copyright (c) 2026 Ryan Guthrie.

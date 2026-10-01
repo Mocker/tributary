@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "symbols": {
+    "createSession": "src/session.ts",
+    "validateSession": "src/session.ts",
+    "revokeSession": "src/session.ts",
+    "authenticate": "src/auth/login.ts",
+    "processPayment": "src/billing/checkout.ts"
+  }
+}

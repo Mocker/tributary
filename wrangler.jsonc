@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "omnigit",
+  "name": "tributary",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -9,16 +9,16 @@
   "artifacts": [
     {
       "binding": "ARTIFACTS",
-      "namespace": "omnigit-main"
+      "namespace": "tributary"
     }
   ],
 
-  // Durable Objects: Real-time agent swarm coordination & WebSocket context bus
+  // Durable Objects: one ChangeProposal DO per proposal (single-writer serialization)
   "durable_objects": {
     "bindings": [
       {
-        "name": "SWARM_COORDINATOR",
-        "class_name": "SwarmCoordinator"
+        "name": "CHANGE_PROPOSAL_DO",
+        "class_name": "ChangeProposalDO"
       }
     ]
   },
@@ -26,29 +26,21 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["SwarmCoordinator"]
+      "new_classes": ["ChangeProposalDO"]
     }
   ],
 
-  // KV: Fast cache for PRISM IAM policies and short-lived agent auth states
+  // KV: Fast cache for repo metadata and intervention requests
   "kv_namespaces": [
     {
-      "binding": "OMNIGIT_KV",
-      "id": "omnigit_kv_namespace_id"
-    }
-  ],
-
-  // Vectorize: Semantic search across commit intents and .git/learnings/ memory
-  "vectorize": [
-    {
-      "binding": "OMNIGIT_LEARNINGS_INDEX",
-      "index_name": "omnigit-learnings"
+      "binding": "TRIBUTARY_KV",
+      "id": "tributary_kv_namespace_id"
     }
   ],
 
   "vars": {
     "ENVIRONMENT": "development",
-    "POLICY_STORAGE": "kv",
-    "ARBITRATION_MODEL": "@cf/meta/llama-3.3-70b-instruct"
+    "GATE_HMAC_SECRET": "tributary-demo-secret-2026",
+    "DEFAULT_BASELINE_REPO": "demo-shop"
   }
 }
