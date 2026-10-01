@@ -1,0 +1,54 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "omnigit",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Cloudflare Artifacts: Git-compatible versioned filesystem
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "omnigit-main"
+    }
+  ],
+
+  // Durable Objects: Real-time agent swarm coordination & WebSocket context bus
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "SWARM_COORDINATOR",
+        "class_name": "SwarmCoordinator"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_classes": ["SwarmCoordinator"]
+    }
+  ],
+
+  // KV: Fast cache for PRISM IAM policies and short-lived agent auth states
+  "kv_namespaces": [
+    {
+      "binding": "OMNIGIT_KV",
+      "id": "omnigit_kv_namespace_id"
+    }
+  ],
+
+  // Vectorize: Semantic search across commit intents and .git/learnings/ memory
+  "vectorize": [
+    {
+      "binding": "OMNIGIT_LEARNINGS_INDEX",
+      "index_name": "omnigit-learnings"
+    }
+  ],
+
+  "vars": {
+    "ENVIRONMENT": "development",
+    "POLICY_STORAGE": "kv",
+    "ARBITRATION_MODEL": "@cf/meta/llama-3.3-70b-instruct"
+  }
+}

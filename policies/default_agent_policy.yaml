@@ -1,0 +1,72 @@
+version: "1.0"
+platform: "omnigit"
+metadata:
+  description: "PRISM Zero-Trust Agent IAM Policy for Cloudflare Artifacts"
+  updated_at: "2026-10-01"
+
+# Global invariants enforced across every agent micro-fork and commit
+invariants:
+  epistemic_air_gap:
+    block_patterns:
+      - "(?i)(bearer\\s+[a-zA-Z0-9_\\-\\.]+)"
+      - "(?i)(cf_access_client_secret|ghp_|github_pat_)"
+      - "(?i)(-----BEGIN [A-Z ]*PRIVATE KEY-----)"
+      - "(?i)(sk-[a-zA-Z0-9]{32,})"
+    redact_commit_messages: true
+
+  verification:
+    require_t3rl: true
+    min_test_pass_rate: 1.0
+    max_remediation_turns: 3
+
+# Agent role-based permissions and path ACLs
+roles:
+  ui_specialist:
+    description: "Builds and styles user interfaces"
+    allowed_paths:
+      - "src/ui/**"
+      - "src/components/**"
+      - "src/pages/**"
+      - "public/**"
+      - "tailwind.config.js"
+    forbidden_paths:
+      - "src/server/**"
+      - "src/iam/**"
+      - "wrangler.jsonc"
+      - "policies/**"
+    max_changed_files_per_turn: 10
+    token_ttl_seconds: 1800
+
+  backend_architect:
+    description: "Develops business logic, APIs, and data models"
+    allowed_paths:
+      - "src/server/**"
+      - "src/api/**"
+      - "src/db/**"
+      - "src/models/**"
+    forbidden_paths:
+      - "wrangler.jsonc"
+      - "policies/**"
+      - ".github/**"
+    required_tests:
+      - "npm test"
+      - "npm run typecheck"
+    token_ttl_seconds: 3600
+
+  refactor_bot:
+    description: "Performs automated codebase refactoring and modernization"
+    allowed_paths:
+      - "src/**"
+    forbidden_paths:
+      - "wrangler.jsonc"
+      - "policies/**"
+    max_changed_files_per_turn: 25
+    requires_ast_compatibility: true
+    token_ttl_seconds: 1200
+
+  security_auditor:
+    description: "Read-only inspection and linting agent"
+    allowed_paths:
+      - "**"
+    read_only: true
+    token_ttl_seconds: 7200

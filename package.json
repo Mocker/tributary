@@ -1,0 +1,32 @@
+{
+  "name": "omnigit",
+  "version": "0.1.0",
+  "description": "OmniGit: Autonomous Multi-Agent Git Platform built on Cloudflare Artifacts & Workers",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "simulate": "tsx scripts/simulate-swarm.ts",
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "isomorphic-git": "^1.27.0",
+    "yaml": "^2.6.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241004.0",
+    "@types/node": "^22.7.4",
+    "prettier": "^3.3.3",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2",
+    "wrangler": "^3.78.10"
+  },
+  "author": "Ryan Guthrie",
+  "license": "Apache-2.0"
+}
