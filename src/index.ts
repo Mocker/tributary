@@ -27,6 +27,7 @@ const DEFAULT_SYMBOL_INDEX: SymbolIndex = {
 
 // In-memory / KV registry of active claims across all proposals for fast overlap check
 const activeClaimsRegistry: Map<string, Claim> = new Map();
+const proposalsRegistry: Map<string, ChangeProposal> = new Map();
 const interventionsRegistry: Map<string, InterventionCard> = new Map();
 const learningsRegistry: Map<string, LearningRule> = new Map();
 
@@ -128,6 +129,7 @@ app.post('/v1/proposals', async (c) => {
   );
 
   const proposalState = await initResponse.json<ChangeProposal>();
+  proposalsRegistry.set(proposalId, proposalState);
 
   return c.json({
     proposalId,
@@ -378,26 +380,147 @@ app.get('/v1/learnings', (c) => {
   });
 });
 
-// 10. GET /v1/interventions — Pending human-decision cards
-app.get('/v1/interventions', (c) => {
-  const pending = Array.from(interventionsRegistry.values()).filter((i) => i.decision === 'pending');
-  return c.json({ interventions: pending });
+// 12. GET /v1/claims — List active claims
+app.get('/v1/claims', (c) => {
+  const now = Date.now();
+  const valid = Array.from(activeClaimsRegistry.values()).filter(
+    (claim) => claim.status === 'active' && claim.leaseExpiresAt > now
+  );
+  return c.json({ claims: valid });
 });
 
-// 11. POST /v1/interventions/:id/resolve — 1-tap decision
-app.post('/v1/interventions/:id/resolve', async (c) => {
-  const id = c.req.param('id');
-  const { decision } = await c.req.json<{ decision: 'approve' | 'reject' }>();
-
-  const card = interventionsRegistry.get(id);
-  if (!card) return c.json({ error: 'Intervention not found' }, 404);
-
-  card.decision = decision;
-  card.resolvedAt = Date.now();
-  interventionsRegistry.set(id, card);
-
-  return c.json({ success: true, intervention: card });
+// 13. GET /v1/proposals — List active proposals & queue state
+app.get('/v1/proposals', (c) => {
+  return c.json({
+    proposals: Array.from(proposalsRegistry.values()),
+  });
 });
+
+// 14. POST /v1/admin/simulate — Trigger in-browser swarm collision demo
+app.post('/v1/admin/simulate', async (c) => {
+  // Step 1: Agent A claims auth
+  const propAId = `prop_auth_${ulid().slice(-6)}`;
+  proposalsRegistry.set(propAId, {
+    id: propAId,
+    baselineRepo: 'demo-shop',
+    forkRepo: `demo-shop__p_${propAId}`,
+    agentId: 'Agent A (Auth)',
+    taskRef: 'AUTH-101',
+    status: 'working',
+    claims: [],
+    attestations: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  const claimA: Claim = {
+    id: `claim_${ulid().slice(-6)}`,
+    proposalId: propAId,
+    agentId: 'Agent A (Auth)',
+    paths: ['src/auth/**'],
+    symbols: ['createSession'],
+    rationale: 'Auth session lifecycle upgrade',
+    leaseExpiresAt: Date.now() + 1800000,
+    status: 'active',
+    createdAt: Date.now(),
+  };
+  activeClaimsRegistry.set(claimA.id, claimA);
+  proposalsRegistry.get(propAId)!.claims.push(claimA);
+
+  // Step 2: Agent B attempts overlapping claim on src/session.ts
+  const propBId = `prop_billing_${ulid().slice(-6)}`;
+  proposalsRegistry.set(propBId, {
+    id: propBId,
+    baselineRepo: 'demo-shop',
+    forkRepo: `demo-shop__p_${propBId}`,
+    agentId: 'Agent B (Billing)',
+    taskRef: 'BILL-402',
+    status: 'claiming',
+    claims: [],
+    attestations: [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+
+  // Check overlap for Agent B
+  const overlap = detectOverlap(
+    { agentId: 'Agent B (Billing)', paths: ['src/billing/**', 'src/session.ts'] },
+    Array.from(activeClaimsRegistry.values()),
+    DEFAULT_SYMBOL_INDEX
+  );
+
+  let interventionCard: InterventionCard | undefined;
+  if (overlap.hasOverlap) {
+    const intId = `int_${ulid().slice(-6)}`;
+    interventionCard = {
+      id: intId,
+      proposalId: propBId,
+      title: `Claim Overlap: Agent B vs Agent A`,
+      description: overlap.reason || 'Overlapping claim on src/session.ts',
+      conflictingClaim: overlap.conflictingClaim,
+      decision: 'pending',
+      createdAt: Date.now(),
+    };
+    interventionsRegistry.set(intId, interventionCard);
+  }
+
+  // Step 3: Agent B narrows claim to src/billing/**
+  const claimB: Claim = {
+    id: `claim_${ulid().slice(-6)}`,
+    proposalId: propBId,
+    agentId: 'Agent B (Billing)',
+    paths: ['src/billing/**'],
+    symbols: ['processPayment'],
+    rationale: 'Payment webhook handler update',
+    leaseExpiresAt: Date.now() + 1800000,
+    status: 'active',
+    createdAt: Date.now(),
+  };
+  activeClaimsRegistry.set(claimB.id, claimB);
+  proposalsRegistry.get(propBId)!.claims.push(claimB);
+  proposalsRegistry.get(propBId)!.status = 'working';
+
+  // Step 4: Gate execution for Agent B (generates signed HMAC attestation)
+  const commitSha = `b202_${ulid().slice(-6)}`;
+  const attestation = await signAttestation(
+    'test',
+    commitSha,
+    'pass',
+    'All 12 session and payment invariant assertions passed.',
+    c.env.GATE_HMAC_SECRET || 'tributary-demo-secret-2026'
+  );
+  proposalsRegistry.get(propBId)!.attestations.push(attestation);
+  proposalsRegistry.get(propBId)!.status = 'gating';
+
+  // Step 5: Merge with CAS & Epistemic Memory Crystallization
+  proposalsRegistry.get(propBId)!.status = 'merged';
+  activeClaimsRegistry.delete(claimB.id);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const slug = 'session-shared-module';
+  const learningRule: LearningRule = {
+    date: today,
+    slug,
+    title: 'Shared Session Module Boundary Invariant',
+    whatHappened:
+      'Agent B attempted to alter session timeout parameters during billing refactor while Agent A was migrating auth tokens.',
+    rule:
+      'src/session.ts is a shared module between auth and billing. Always claim src/session.ts explicitly; never implicitly mutate session contracts inside billing PRs.',
+    filePath: generateLearningFilename(today, slug),
+  };
+  learningsRegistry.set(slug, learningRule);
+
+  return c.json({
+    success: true,
+    message: 'Swarm collision simulation triggered cleanly.',
+    proposalA: propAId,
+    proposalB: propBId,
+    intervention: interventionCard,
+    attestation,
+    learning: learningRule,
+  });
+});
+
 
 // -------------------------------------------------------------
 // Radar UI (Static HTML + SSE Client)
@@ -411,80 +534,172 @@ app.get('/', (c) => {
   <title>Tributary Radar — Agent Collaboration Plane</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
-    body { background-color: #0d1117; color: #c9d1d9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-    .radar-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; }
+    body { background-color: #0b0f17; color: #c9d1d9; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .radar-card { background: #131823; border: 1px solid #232b3b; border-radius: 10px; }
   </style>
 </head>
 <body class="p-6">
   <div class="max-w-7xl mx-auto">
-    <header class="flex justify-between items-center pb-6 border-b border-gray-800">
+    <!-- Header -->
+    <header class="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-gray-800 gap-4">
       <div>
         <div class="flex items-center gap-3">
-          <span class="text-2xl font-bold tracking-tight text-white">🌊 Tributary</span>
-          <span class="px-2 py-0.5 text-xs font-semibold bg-emerald-950 text-emerald-400 border border-emerald-800 rounded">LIVE RADAR</span>
+          <span class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
+            <span>🌊</span> Tributary
+          </span>
+          <span class="px-2.5 py-0.5 text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 rounded-full tracking-wide">
+            LIVE RADAR
+          </span>
         </div>
-        <p class="text-sm text-gray-400 mt-1">"GitHub coordinates humans. Tributary coordinates agents."</p>
+        <p class="text-sm text-gray-400 mt-1 italic">
+          "GitHub coordinates humans. Tributary coordinates agents."
+        </p>
       </div>
-      <div class="flex gap-4 text-xs font-mono text-gray-400">
-        <div>Substrate: <span class="text-emerald-400">Cloudflare Artifacts</span></div>
-        <div>Runtime: <span class="text-emerald-400">Workers + Durable Objects</span></div>
+
+      <div class="flex items-center gap-3">
+        <button onclick="runSimulation()" id="sim-btn" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg transition shadow-lg shadow-emerald-950 flex items-center gap-2 cursor-pointer">
+          <span>▶️</span> Run Swarm Simulation
+        </button>
+        <div class="text-xs font-mono text-gray-400 bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-lg">
+          <div>Substrate: <span class="text-emerald-400 font-semibold">Artifacts</span> | Runtime: <span class="text-emerald-400 font-semibold">Workers DO</span></div>
+        </div>
       </div>
     </header>
 
+    <!-- 3-Panel Coordination Grid -->
     <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
       <!-- Panel 1: Live Claims -->
-      <div class="radar-card p-4">
-        <div class="flex justify-between items-center mb-3">
-          <h2 class="text-sm font-bold uppercase tracking-wider text-gray-300">1. Live Claims</h2>
-          <span id="claim-count" class="text-xs bg-blue-950 text-blue-300 px-2 py-0.5 rounded">0 active</span>
+      <div class="radar-card p-5">
+        <div class="flex justify-between items-center mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-blue-400">🛡️</span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">1. Live Claims</h2>
+          </div>
+          <span id="claim-count" class="text-xs bg-blue-950/80 text-blue-300 border border-blue-800/60 px-2.5 py-0.5 rounded-full font-mono">0 active</span>
         </div>
-        <div id="claims-list" class="space-y-2 text-xs">
-          <div class="text-gray-500 italic p-3 text-center">No active claims</div>
+        <div id="claims-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
+          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No active claims</div>
         </div>
       </div>
 
       <!-- Panel 2: Gate Runs & Attestations -->
-      <div class="radar-card p-4">
-        <div class="flex justify-between items-center mb-3">
-          <h2 class="text-sm font-bold uppercase tracking-wider text-gray-300">2. Gate Attestations</h2>
-          <span class="text-xs bg-purple-950 text-purple-300 px-2 py-0.5 rounded">HMAC Signed</span>
+      <div class="radar-card p-5">
+        <div class="flex justify-between items-center mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-purple-400">⚡</span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">2. Gate Attestations</h2>
+          </div>
+          <span class="text-xs bg-purple-950/80 text-purple-300 border border-purple-800/60 px-2.5 py-0.5 rounded-full font-mono">HMAC SHA-256</span>
         </div>
-        <div id="gates-list" class="space-y-2 text-xs">
-          <div class="text-gray-500 italic p-3 text-center">Awaiting gate runs</div>
+        <div id="gates-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
+          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">Awaiting gate runs</div>
         </div>
       </div>
 
-      <!-- Panel 3: Merge Queue & Memory -->
-      <div class="radar-card p-4">
-        <div class="flex justify-between items-center mb-3">
-          <h2 class="text-sm font-bold uppercase tracking-wider text-gray-300">3. Merge & Epistemic Memory</h2>
-          <span class="text-xs bg-amber-950 text-amber-300 px-2 py-0.5 rounded">CAS Guarded</span>
+      <!-- Panel 3: Merge Queue & Epistemic Memory -->
+      <div class="radar-card p-5">
+        <div class="flex justify-between items-center mb-4">
+          <div class="flex items-center gap-2">
+            <span class="text-amber-400">🧠</span>
+            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">3. Epistemic Memory</h2>
+          </div>
+          <span class="text-xs bg-amber-950/80 text-amber-300 border border-amber-800/60 px-2.5 py-0.5 rounded-full font-mono">.git/learnings</span>
         </div>
-        <div id="merge-list" class="space-y-2 text-xs">
-          <div class="text-gray-500 italic p-3 text-center">Merge queue idle</div>
+        <div id="memory-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
+          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No learnings crystallized</div>
         </div>
       </div>
     </div>
 
     <!-- Intervention Radar Card -->
-    <div id="intervention-drawer" class="mt-6 radar-card p-4 border-amber-900/50 bg-amber-950/20 hidden">
-      <div class="flex justify-between items-center">
-        <div class="flex items-center gap-2">
-          <span class="text-amber-400 font-bold">⚠️ Human Intervention Required</span>
-          <span id="int-title" class="text-sm text-gray-200"></span>
+    <div id="intervention-drawer" class="mt-6 radar-card p-5 border-amber-900/60 bg-amber-950/20 hidden">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <span class="px-2 py-0.5 bg-amber-500 text-black font-bold text-xs rounded">ACTION REQUIRED</span>
+            <span id="int-title" class="text-sm font-semibold text-amber-200"></span>
+          </div>
+          <p id="int-desc" class="text-xs text-gray-300 mt-2 font-mono"></p>
         </div>
-        <div class="flex gap-2">
-          <button onclick="resolveIntervention('reject')" class="px-3 py-1 bg-red-900/50 hover:bg-red-800 text-red-200 text-xs rounded border border-red-700">1-Tap Reject</button>
-          <button onclick="resolveIntervention('approve')" class="px-3 py-1 bg-emerald-900/50 hover:bg-emerald-800 text-emerald-200 text-xs rounded border border-emerald-700">1-Tap Approve</button>
+        <div class="flex gap-2 shrink-0">
+          <button onclick="resolveIntervention('reject')" class="px-3.5 py-1.5 bg-red-950 hover:bg-red-900 text-red-200 text-xs font-semibold rounded-lg border border-red-800 transition cursor-pointer">1-Tap Reject</button>
+          <button onclick="resolveIntervention('approve')" class="px-3.5 py-1.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-200 text-xs font-semibold rounded-lg border border-emerald-800 transition cursor-pointer">1-Tap Approve</button>
         </div>
       </div>
-      <p id="int-desc" class="text-xs text-gray-400 mt-2"></p>
     </div>
   </div>
 
   <script>
     async function refreshRadar() {
       try {
+        // 1. Fetch claims
+        const claimsRes = await fetch('/v1/claims');
+        const claimsData = await claimsRes.json();
+        const claimsList = document.getElementById('claims-list');
+        const countSpan = document.getElementById('claim-count');
+        const claims = claimsData.claims || [];
+        countSpan.innerText = claims.length + ' active';
+
+        if (claims.length === 0) {
+          claimsList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No active claims</div>';
+        } else {
+          claimsList.innerHTML = claims.map(c => `
+            <div class="p-3 bg-gray-900/90 border border-gray-800 rounded-lg">
+              <div class="flex justify-between items-center mb-1.5">
+                <span class="font-bold text-blue-300">\${c.agentId}</span>
+                <span class="text-[10px] text-gray-500 font-mono">lease: \${Math.max(0, Math.round((c.leaseExpiresAt - Date.now()) / 60000))}m</span>
+              </div>
+              <div class="flex flex-wrap gap-1 mb-1.5">
+                \${c.paths.map(p => '<span class="bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded text-[11px] font-mono">' + p + '</span>').join('')}
+                \${(c.symbols || []).map(s => '<span class="bg-indigo-950 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[11px] font-mono">sym:' + s + '</span>').join('')}
+              </div>
+              <div class="text-[11px] text-gray-400 italic">\${c.rationale || ''}</div>
+            </div>
+          `).join('');
+        }
+
+        // 2. Fetch proposals & attestations
+        const propRes = await fetch('/v1/proposals');
+        const propData = await propRes.json();
+        const gatesList = document.getElementById('gates-list');
+        const proposals = propData.proposals || [];
+        const allAttestations = proposals.flatMap(p => p.attestations.map(a => ({ ...a, agentId: p.agentId })));
+
+        if (allAttestations.length === 0) {
+          gatesList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">Awaiting gate runs</div>';
+        } else {
+          gatesList.innerHTML = allAttestations.map(a => `
+            <div class="p-3 bg-gray-900/90 border border-gray-800 rounded-lg">
+              <div class="flex justify-between items-center mb-1">
+                <span class="font-semibold text-purple-300 font-mono">gate:\${a.gateId}</span>
+                <span class="px-2 py-0.5 rounded text-[10px] font-bold \${a.verdict === 'pass' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">\${a.verdict.toUpperCase()}</span>
+              </div>
+              <div class="text-[11px] text-gray-300 mb-1 font-mono">commit: \${a.commitSha.slice(0, 10)}</div>
+              <div class="text-[11px] text-gray-400">\${a.summary}</div>
+              <div class="mt-1 text-[9px] text-gray-500 font-mono truncate">sig: \${a.signature.slice(0, 32)}...</div>
+            </div>
+          `).join('');
+        }
+
+        // 3. Fetch learnings (.git/learnings/)
+        const learnRes = await fetch('/v1/learnings');
+        const learnData = await learnRes.json();
+        const memList = document.getElementById('memory-list');
+        const learnings = learnData.learnings || [];
+
+        if (learnings.length === 0) {
+          memList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No learnings crystallized</div>';
+        } else {
+          memList.innerHTML = learnings.map(l => `
+            <div class="p-3 bg-gray-900/90 border border-amber-900/40 rounded-lg">
+              <div class="font-bold text-amber-300 text-xs mb-1">\${l.title}</div>
+              <div class="text-[11px] text-gray-300 border-l-2 border-amber-500 pl-2 my-2 italic">\${l.rule}</div>
+              <div class="text-[10px] text-gray-500 font-mono">\${l.filePath}</div>
+            </div>
+          `).join('');
+        }
+
+        // 4. Fetch interventions
         const intRes = await fetch('/v1/interventions');
         const intData = await intRes.json();
         const drawer = document.getElementById('intervention-drawer');
@@ -497,8 +712,24 @@ app.get('/', (c) => {
         } else {
           drawer.classList.add('hidden');
         }
-      } catch (e) {}
+      } catch (e) {
+        console.error(e);
+      }
     }
+
+    async function runSimulation() {
+      const btn = document.getElementById('sim-btn');
+      btn.innerText = '⏳ Simulating...';
+      btn.disabled = true;
+      try {
+        await fetch('/v1/admin/simulate', { method: 'POST' });
+        await refreshRadar();
+      } finally {
+        btn.innerText = '▶️ Run Swarm Simulation';
+        btn.disabled = false;
+      }
+    }
+
     async function resolveIntervention(decision) {
       if (!window.activeInterventionId) return;
       await fetch('/v1/interventions/' + window.activeInterventionId + '/resolve', {
@@ -508,6 +739,7 @@ app.get('/', (c) => {
       });
       refreshRadar();
     }
+
     setInterval(refreshRadar, 2000);
     refreshRadar();
   </script>
