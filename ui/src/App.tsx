@@ -1,0 +1,258 @@
+import { useState } from 'react';
+import {
+  useRadar,
+  resolveIntervention,
+  runSimulation,
+  type Attestation,
+  type ChangeProposal,
+  type Claim,
+  type InterventionCard,
+  type LearningRule,
+} from './api';
+import './index.css';
+
+// ---------------------------------------------------------------------------
+// Small presentational helpers
+// ---------------------------------------------------------------------------
+function leaseMinutes(claim: Claim): number {
+  return Math.max(0, Math.round((claim.leaseExpiresAt - Date.now()) / 60000));
+}
+
+function Empty({ children }: { children: string }) {
+  return <div className="empty">{children}</div>;
+}
+
+function Panel({ title, icon, badge, children }: { title: string; icon: string; badge?: string; children: React.ReactNode }) {
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div className="panel-title">
+          <span>{icon}</span>
+          <h2>{title}</h2>
+        </div>
+        {badge && <span className="pill">{badge}</span>}
+      </div>
+      <div className="panel-body">{children}</div>
+    </section>
+  );
+}
+
+function ClaimCard({ claim }: { claim: Claim }) {
+  return (
+    <div className="card">
+      <div className="card-row">
+        <span className="agent">{claim.agentId}</span>
+        <span className="meta">lease: {leaseMinutes(claim)}m</span>
+      </div>
+      <div className="tags">
+        {claim.paths.map((p) => (
+          <span key={p} className="tag">{p}</span>
+        ))}
+        {(claim.symbols ?? []).map((s) => (
+          <span key={s} className="tag sym">sym:{s}</span>
+        ))}
+      </div>
+      {claim.rationale && <div className="rationale">{claim.rationale}</div>}
+    </div>
+  );
+}
+
+function AttestationCard({ a, agentId }: { a: Attestation; agentId: string }) {
+  const pass = a.verdict === 'pass';
+  return (
+    <div className="card">
+      <div className="card-row">
+        <span className="gate">gate:{a.gateId}</span>
+        <span className={`verdict ${pass ? 'pass' : 'fail'}`}>{a.verdict.toUpperCase()}</span>
+      </div>
+      <div className="meta">commit: {a.commitSha.slice(0, 10)} · {agentId}</div>
+      <div className="summary">{a.summary}</div>
+      <div className="sig" title={a.signature}>sig: {a.signature.slice(0, 32)}…</div>
+    </div>
+  );
+}
+
+function LearningCard({ l }: { l: LearningRule }) {
+  return (
+    <div className="card memory">
+      <div className="memory-title">{l.title}</div>
+      <blockquote>{l.rule}</blockquote>
+      <div className="meta">{l.filePath}</div>
+    </div>
+  );
+}
+
+function InterventionDrawer({
+  interventions,
+  onResolved,
+}: {
+  interventions: InterventionCard[];
+  onResolved: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  if (interventions.length === 0) return null;
+
+  const decide = async (id: string, decision: 'approve' | 'reject') => {
+    setBusy(id);
+    setError(null);
+    try {
+      await resolveIntervention(id, decision);
+      onResolved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'resolve failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <section className="drawer">
+      <div className="drawer-head">
+        <span className="action-required">ACTION REQUIRED</span>
+        <h2>Claim Overlap Interventions</h2>
+      </div>
+      {error && <div className="error">{error}</div>}
+      <div className="drawer-list">
+        {interventions.map((card) => (
+          <div key={card.id} className="card intervention">
+            <div className="card-row">
+              <span className="agent">{card.title}</span>
+              <span className="meta">{new Date(card.createdAt).toLocaleTimeString()}</span>
+            </div>
+            {/* The one-sentence rejection explanation — the money shot */}
+            <p className="rejection-reason">“{card.description}”</p>
+            {card.conflictingClaim && (
+              <div className="meta">
+                held by <b>{card.conflictingClaim.agentId}</b> on{' '}
+                {card.conflictingClaim.paths.join(', ')}
+              </div>
+            )}
+            <div className="btn-row">
+              <button
+                className="btn reject"
+                disabled={busy === card.id}
+                onClick={() => decide(card.id, 'reject')}
+              >
+                1-Tap Reject
+              </button>
+              <button
+                className="btn approve"
+                disabled={busy === card.id}
+                onClick={() => decide(card.id, 'approve')}
+              >
+                1-Tap Approve
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+export default function App() {
+  const { claims, proposals, learnings, interventions, lastRejection, connection, refresh, dismissRejection } =
+    useRadar();
+  const [simulating, setSimulating] = useState(false);
+  const [simError, setSimError] = useState<string | null>(null);
+
+  const allAttestations: { a: Attestation; agentId: string }[] = proposals.flatMap((p: ChangeProposal) =>
+    (p.attestations ?? []).map((a) => ({ a, agentId: p.agentId })),
+  );
+
+  const doSimulate = async () => {
+    setSimulating(true);
+    setSimError(null);
+    try {
+      await runSimulation();
+      await refresh();
+    } catch (e) {
+      setSimError(e instanceof Error ? e.message : 'simulation failed');
+    } finally {
+      setSimulating(false);
+    }
+  };
+
+  return (
+    <div className="app">
+      <header className="header">
+        <div>
+          <div className="brand">
+            <span className="wave">🌊</span>
+            <span className="brand-name">Tributary</span>
+            <span className="live-badge">LIVE RADAR</span>
+            <span className={`conn ${connection}`}>
+              {connection === 'live' ? '● connected' : connection === 'connecting' ? '● connecting…' : '● backend unreachable'}
+            </span>
+          </div>
+          <p className="thesis">“GitHub coordinates humans. Tributary coordinates agents.”</p>
+        </div>
+        <div className="header-actions">
+          <div className="substrate">
+            Substrate: <b>Artifacts</b> | Runtime: <b>Workers DO</b>
+          </div>
+          <button className="btn simulate" onClick={doSimulate} disabled={simulating}>
+            {simulating ? '⏳ Simulating…' : '▶️ Run Swarm Simulation'}
+          </button>
+        </div>
+      </header>
+      {simError && <div className="error">{simError}</div>}
+
+      {/* Claim rejection banner — surfaces the one-sentence reason prominently */}
+      {lastRejection && (
+        <div className="rejection-banner" role="alert">
+          <div>
+            <div className="rejection-kicker">🚨 CLAIM REJECTED AT CLAIM TIME — zero compute wasted</div>
+            <p className="rejection-reason big">“{lastRejection.reason ?? 'Overlapping claim detected.'}”</p>
+            <div className="meta">
+              {lastRejection.agentId} · {new Date(lastRejection.receivedAt).toLocaleTimeString()}
+            </div>
+          </div>
+          <button className="btn dismiss" onClick={dismissRejection}>
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="grid">
+        <Panel title="1. Live Claims" icon="🛡️" badge={`${claims.length} active`}>
+          {claims.length === 0 ? (
+            <Empty>No active claims</Empty>
+          ) : (
+            claims.map((c) => <ClaimCard key={c.id} claim={c} />)
+          )}
+        </Panel>
+
+        <Panel title="2. Gate Attestations" icon="⚡" badge="HMAC SHA-256">
+          {allAttestations.length === 0 ? (
+            <Empty>Awaiting gate runs</Empty>
+          ) : (
+            allAttestations.map(({ a, agentId }, i) => (
+              <AttestationCard key={`${a.gateId}-${a.commitSha}-${i}`} a={a} agentId={agentId} />
+            ))
+          )}
+        </Panel>
+
+        <Panel title="3. Epistemic Memory" icon="🧠" badge=".git/learnings">
+          {learnings.length === 0 ? (
+            <Empty>No learnings crystallized</Empty>
+          ) : (
+            learnings.map((l) => <LearningCard key={l.slug} l={l} />)
+          )}
+        </Panel>
+      </div>
+
+      <InterventionDrawer interventions={interventions} onResolved={refresh} />
+
+      <footer className="footer">
+        Merge queue: {proposals.filter((p) => !['merged', 'rejected', 'expired'].includes(p.status)).length} open proposals ·{' '}
+        {proposals.length} total
+      </footer>
+    </div>
+  );
+}
