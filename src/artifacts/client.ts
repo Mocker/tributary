@@ -23,17 +23,21 @@ export class ArtifactsClient {
   }
 
   /**
-   * Spawns an instant, zero-copy micro-fork for an agent task
+   * Spawns a per-task micro-fork of the baseline repo via the repo-handle
+   * fork primitive (repo.fork(name)), matching the plan's §4 API surface.
+   * (Do not claim "zero-copy"/O(1) forks without measured data — see
+   * docs/spikes/phase0-spikes.md for the measured latency notes.)
    */
   async spawnMicroFork(
     baseRepo: string,
     agentTaskId: string,
     ttlSeconds: number = 3600
   ): Promise<MicroForkResult> {
-    const forkName = `${baseRepo}-task-${agentTaskId}`;
+    const forkName = `${baseRepo}__p_${agentTaskId}`;
 
-    // Cloudflare Artifacts programmatic fork primitive
-    const { remote, repo } = await this.artifacts.fork(baseRepo, forkName);
+    // Cloudflare Artifacts programmatic fork primitive (repo handle)
+    const base = await this.ensureBaseRepo(baseRepo);
+    const { remote, repo } = await base.fork(forkName);
 
     // Mint scoped, short-lived Git write token for this micro-fork
     const { plaintext, expiresAt } = await repo.createToken('write', ttlSeconds);

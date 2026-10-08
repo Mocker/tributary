@@ -200,26 +200,20 @@ async function runDemo() {
   await sleep(1500);
 
   // -------------------------------------------------------------
-  // ACT 5: Scale — Measured Fork Latency
+  // ACT 5: Scale — Fork Latency (honesty note)
   // -------------------------------------------------------------
-  console.log('🎬 ACT 5: SCALE BENCHMARK (Artifacts Fork Latency)');
+  // Live fork-latency measurement requires the Cloudflare API token, which is
+  // pending. The numbers below are a PROJECTION from the Phase 0 spike notes
+  // (docs/spikes/phase0-spikes.md), not a live benchmark — they must not be
+  // presented to judges as measured data until re-run against real Artifacts.
+  console.log('🎬 ACT 5: SCALE PROJECTION (Artifacts Fork Latency)');
   console.log('--------------------------------------------------');
-  console.log('Simulating 10 rapid micro-forks on Cloudflare Artifacts:');
-
-  const latencies: number[] = [];
-  for (let i = 1; i <= 10; i++) {
-    const start = Date.now();
-    // Simulate measured edge fork delay (80-150ms per Phase 0 spike)
-    await sleep(Math.floor(80 + Math.random() * 40));
-    const elapsed = Date.now() - start;
-    latencies.push(elapsed);
-    process.stdout.write(`  Fork #${i} (fork://demo-shop__p_${i}): ${elapsed}ms\n`);
-  }
-
-  const avg = Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length);
-  console.log(`\n⚡ Average fork provisioning time: ${avg}ms!`);
+  console.log('NOTE: projected from Phase 0 spike notes; live measurement pending Cloudflare token.');
+  console.log('  Per spike notes: repo.fork() ~80-180ms, repo.create() ~250-400ms, createToken ~15-30ms.');
+  console.log('  10,000 concurrent agents x ~130ms median fork = ~22 fork-minutes of edge work,');
+  console.log('  embarrassingly parallel across the edge — an addressing problem, not a storage problem.');
   console.log(
-    '👉 "Fork-per-task is cheap enough that ten thousand agents is an addressing problem, not a storage problem."\n'
+    '\n👉 "Fork-per-task is cheap enough that ten thousand agents is an addressing problem, not a storage problem."\n'
   );
 
   console.log('='.repeat(70));

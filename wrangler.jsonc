@@ -30,6 +30,18 @@
     }
   ],
 
+  // Radar UI: React + Vite app in ui/, built to ui/dist and served as static
+  // assets. Requests that match no asset fall through to the Worker (/v1 API).
+  "assets": {
+    "directory": "./ui/dist",
+    "not_found_handling": "single-page-application"
+  },
+
+  // Build the radar UI before deploy (runs after wrangler's npm install)
+  "build": {
+    "command": "npm run build:ui"
+  },
+
   // KV: Fast cache for repo metadata and intervention requests
   "kv_namespaces": [
     {

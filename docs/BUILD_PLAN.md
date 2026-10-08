@@ -55,3 +55,50 @@ agents (any client: scripts, MCP clients, IDE agents)
    │  merge state)  │            └────────────────────┘
    └────────────────┘
 ```
+
+---
+
+## 4. Guard gate: decision-model choice (from the 2026-10-03 "Guard Gate" brief)
+
+Tributary's verification gate decides merges by signed attestation today. A future
+*decision gate* — triaging ambiguous interventions (overlapping claims neither agent
+yields) — needs a decision model. The October 2026 decision-model wave tripled the
+options; the brief's verdict:
+
+- **OpenAI Decisions API — disqualified for the demo.** Preview-gated to selected
+  customers; building an Oct 14 demo on access you may never get is a non-starter.
+- **AWS Decider 2B — the independence pick.** Went fully open Oct 1: weights,
+  training recipe, evals, all public under Apache 2.0; small enough to run on a
+  local GPU. The demo works regardless of vendor previews or Cloudflare account state.
+- **Cloudflare Clef flash — the politics pick.** 39ms medians, Jev-API compatible
+  (vendor numbers, as stated in the brief), and Cloudflare-native: since this entry
+  is explicitly a bid for Cloudflare's attention, a Cloudflare-native decision layer
+  is part of the demo's argument.
+
+Brief's call: **Clef for the story, Decider for the safety, never Decisions for the demo.**
+
+Caveat (from the brief): vendor benchmark numbers come from the ecosystems that
+launched the models — one third-party check of OpenAI's Luna found 99%-confidence
+claims landing at 68% real accuracy. Validate any decision threshold on Tributary's
+own gate data either way.
+
+**v1 scope is unchanged** (single deterministic `test` gate). The decision model is
+documented here as the extension point for a future intervention-triage decision gate,
+not a v1 build item.
+
+### Agent Access Model vocabulary (Cloudflare, Oct 2026)
+
+Tributary's security framing uses the Agent Access Model vocabulary
+(https://blog.cloudflare.com/the-agent-access-model/):
+
+- **Task-scoped, short-lived credentials**: per-proposal Artifacts tokens (TTL 1h)
+  are Tributary's version — a credential minted for the task, expiring with it.
+- **Mediation in the harness, not the prompt**: overlap detection and merge gating
+  are enforced by the Worker/DO at the point of action, never by asking the agent nicely.
+- **Trust Ratchet (capability only narrows)**: expired/superseded claims release
+  paths; after the mainline moves, a rebase + re-attest cycle is required — authority
+  is never silently restored.
+- **Agent Identity Broker**: `agentId` + `taskRef` on every proposal; every claim,
+  attestation, and merge is attributable to a task-scoped agent run.
+
+This vocabulary belongs in the demo narrative (Acts 2–3) and the submission README.

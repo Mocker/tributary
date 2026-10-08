@@ -132,6 +132,13 @@ export class ChangeProposalDO {
       });
     }
 
+    // 9. Internal broadcast from the Worker (e.g. claim_rejected, intervention_resolved)
+    if (url.pathname === '/broadcast' && request.method === 'POST') {
+      const event = await request.json();
+      this.broadcastEvent(event);
+      return Response.json({ success: true });
+    }
+
     return new Response('Not Found', { status: 404 });
   }
 

@@ -198,6 +198,22 @@ app.post('/v1/proposals/:id/claims', async (c) => {
     };
     interventionsRegistry.set(interventionId, card);
 
+    // Emit on the proposal's SSE context bus so the radar surfaces the rejection live
+    try {
+      await stub.fetch(new Request('http://internal/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'claim_rejected',
+          proposalId,
+          agentId: proposal.agentId,
+          reason: overlap.reason,
+          conflictingClaim: overlap.conflictingClaim,
+          interventionId,
+        }),
+      }));
+    } catch { /* bus broadcast is best-effort */ }
+
     return c.json({
       error: 'Claim conflict detected',
       code: 'claim_overlap',
@@ -396,6 +412,59 @@ app.get('/v1/proposals', (c) => {
   });
 });
 
+// 10. GET /v1/interventions — List intervention cards (pending by default)
+app.get('/v1/interventions', (c) => {
+  const status = c.req.query('status') || 'pending';
+  const cards = Array.from(interventionsRegistry.values()).filter(
+    (card) => status === 'all' || card.decision === status
+  );
+  return c.json({ interventions: cards });
+});
+
+// 11. POST /v1/interventions/:id/resolve — 1-tap approve/reject
+//
+// Semantics (v1): 'approve' sides with the blocked agent — the conflicting
+// claim is superseded (yielded) so the blocked agent can re-claim the path.
+// 'reject' upholds the existing claim; the blocked agent must narrow its claim.
+app.post('/v1/interventions/:id/resolve', async (c) => {
+  const id = c.req.param('id');
+  const { decision } = await c.req.json<{ decision: 'approve' | 'reject' }>();
+
+  const card = interventionsRegistry.get(id);
+  if (!card) return c.json({ error: 'Intervention not found' }, 404);
+  if (decision !== 'approve' && decision !== 'reject') {
+    return c.json({ error: "decision must be 'approve' or 'reject'" }, 400);
+  }
+  if (card.decision !== 'pending') {
+    return c.json({ error: `Intervention already ${card.decision}` }, 409);
+  }
+
+  card.decision = decision === 'approve' ? 'approved' : 'rejected';
+  card.resolvedAt = Date.now();
+  interventionsRegistry.set(id, card);
+
+  if (decision === 'approve' && card.conflictingClaim) {
+    const conflict = activeClaimsRegistry.get(card.conflictingClaim.id);
+    if (conflict) {
+      conflict.status = 'superseded';
+      activeClaimsRegistry.delete(conflict.id);
+    }
+  }
+
+  // Emit on the proposal's SSE context bus
+  try {
+    const doId = c.env.CHANGE_PROPOSAL_DO.idFromName(card.proposalId);
+    const stub = c.env.CHANGE_PROPOSAL_DO.get(doId);
+    await stub.fetch(new Request('http://internal/broadcast', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'intervention_resolved', intervention: card }),
+    }));
+  } catch { /* bus broadcast is best-effort */ }
+
+  return c.json({ success: true, intervention: card });
+});
+
 // 14. POST /v1/admin/simulate — Trigger in-browser swarm collision demo
 app.post('/v1/admin/simulate', async (c) => {
   // Step 1: Agent A claims auth
@@ -521,230 +590,12 @@ app.post('/v1/admin/simulate', async (c) => {
   });
 });
 
-
 // -------------------------------------------------------------
-// Radar UI (Static HTML + SSE Client)
+// Radar UI
+// The radar is a React + Vite app in ui/, built to ui/dist and served by
+// wrangler static assets (see [assets] in wrangler.jsonc). The legacy inline
+// HTML page was removed 2026-10-07: it failed tsc (unescaped backticks inside
+// the outer template literal) and duplicated the ui/ app's panels.
 // -------------------------------------------------------------
-app.get('/', (c) => {
-  return c.html(`<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Tributary Radar — Agent Collaboration Plane</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    body { background-color: #0b0f17; color: #c9d1d9; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-    .radar-card { background: #131823; border: 1px solid #232b3b; border-radius: 10px; }
-  </style>
-</head>
-<body class="p-6">
-  <div class="max-w-7xl mx-auto">
-    <!-- Header -->
-    <header class="flex flex-col md:flex-row md:items-center justify-between pb-6 border-b border-gray-800 gap-4">
-      <div>
-        <div class="flex items-center gap-3">
-          <span class="text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-            <span>🌊</span> Tributary
-          </span>
-          <span class="px-2.5 py-0.5 text-xs font-semibold bg-emerald-950/80 text-emerald-400 border border-emerald-800/80 rounded-full tracking-wide">
-            LIVE RADAR
-          </span>
-        </div>
-        <p class="text-sm text-gray-400 mt-1 italic">
-          "GitHub coordinates humans. Tributary coordinates agents."
-        </p>
-      </div>
-
-      <div class="flex items-center gap-3">
-        <button onclick="runSimulation()" id="sim-btn" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-xs rounded-lg transition shadow-lg shadow-emerald-950 flex items-center gap-2 cursor-pointer">
-          <span>▶️</span> Run Swarm Simulation
-        </button>
-        <div class="text-xs font-mono text-gray-400 bg-gray-900 border border-gray-800 px-3 py-1.5 rounded-lg">
-          <div>Substrate: <span class="text-emerald-400 font-semibold">Artifacts</span> | Runtime: <span class="text-emerald-400 font-semibold">Workers DO</span></div>
-        </div>
-      </div>
-    </header>
-
-    <!-- 3-Panel Coordination Grid -->
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mt-6">
-      <!-- Panel 1: Live Claims -->
-      <div class="radar-card p-5">
-        <div class="flex justify-between items-center mb-4">
-          <div class="flex items-center gap-2">
-            <span class="text-blue-400">🛡️</span>
-            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">1. Live Claims</h2>
-          </div>
-          <span id="claim-count" class="text-xs bg-blue-950/80 text-blue-300 border border-blue-800/60 px-2.5 py-0.5 rounded-full font-mono">0 active</span>
-        </div>
-        <div id="claims-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
-          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No active claims</div>
-        </div>
-      </div>
-
-      <!-- Panel 2: Gate Runs & Attestations -->
-      <div class="radar-card p-5">
-        <div class="flex justify-between items-center mb-4">
-          <div class="flex items-center gap-2">
-            <span class="text-purple-400">⚡</span>
-            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">2. Gate Attestations</h2>
-          </div>
-          <span class="text-xs bg-purple-950/80 text-purple-300 border border-purple-800/60 px-2.5 py-0.5 rounded-full font-mono">HMAC SHA-256</span>
-        </div>
-        <div id="gates-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
-          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">Awaiting gate runs</div>
-        </div>
-      </div>
-
-      <!-- Panel 3: Merge Queue & Epistemic Memory -->
-      <div class="radar-card p-5">
-        <div class="flex justify-between items-center mb-4">
-          <div class="flex items-center gap-2">
-            <span class="text-amber-400">🧠</span>
-            <h2 class="text-xs font-bold uppercase tracking-wider text-gray-300">3. Epistemic Memory</h2>
-          </div>
-          <span class="text-xs bg-amber-950/80 text-amber-300 border border-amber-800/60 px-2.5 py-0.5 rounded-full font-mono">.git/learnings</span>
-        </div>
-        <div id="memory-list" class="space-y-3 text-xs max-h-[460px] overflow-y-auto pr-1">
-          <div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No learnings crystallized</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Intervention Radar Card -->
-    <div id="intervention-drawer" class="mt-6 radar-card p-5 border-amber-900/60 bg-amber-950/20 hidden">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div class="flex items-center gap-2">
-            <span class="px-2 py-0.5 bg-amber-500 text-black font-bold text-xs rounded">ACTION REQUIRED</span>
-            <span id="int-title" class="text-sm font-semibold text-amber-200"></span>
-          </div>
-          <p id="int-desc" class="text-xs text-gray-300 mt-2 font-mono"></p>
-        </div>
-        <div class="flex gap-2 shrink-0">
-          <button onclick="resolveIntervention('reject')" class="px-3.5 py-1.5 bg-red-950 hover:bg-red-900 text-red-200 text-xs font-semibold rounded-lg border border-red-800 transition cursor-pointer">1-Tap Reject</button>
-          <button onclick="resolveIntervention('approve')" class="px-3.5 py-1.5 bg-emerald-950 hover:bg-emerald-900 text-emerald-200 text-xs font-semibold rounded-lg border border-emerald-800 transition cursor-pointer">1-Tap Approve</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script>
-    async function refreshRadar() {
-      try {
-        // 1. Fetch claims
-        const claimsRes = await fetch('/v1/claims');
-        const claimsData = await claimsRes.json();
-        const claimsList = document.getElementById('claims-list');
-        const countSpan = document.getElementById('claim-count');
-        const claims = claimsData.claims || [];
-        countSpan.innerText = claims.length + ' active';
-
-        if (claims.length === 0) {
-          claimsList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No active claims</div>';
-        } else {
-          claimsList.innerHTML = claims.map(c => `
-            <div class="p-3 bg-gray-900/90 border border-gray-800 rounded-lg">
-              <div class="flex justify-between items-center mb-1.5">
-                <span class="font-bold text-blue-300">\${c.agentId}</span>
-                <span class="text-[10px] text-gray-500 font-mono">lease: \${Math.max(0, Math.round((c.leaseExpiresAt - Date.now()) / 60000))}m</span>
-              </div>
-              <div class="flex flex-wrap gap-1 mb-1.5">
-                \${c.paths.map(p => '<span class="bg-gray-800 text-gray-300 px-1.5 py-0.5 rounded text-[11px] font-mono">' + p + '</span>').join('')}
-                \${(c.symbols || []).map(s => '<span class="bg-indigo-950 text-indigo-300 border border-indigo-800 px-1.5 py-0.5 rounded text-[11px] font-mono">sym:' + s + '</span>').join('')}
-              </div>
-              <div class="text-[11px] text-gray-400 italic">\${c.rationale || ''}</div>
-            </div>
-          `).join('');
-        }
-
-        // 2. Fetch proposals & attestations
-        const propRes = await fetch('/v1/proposals');
-        const propData = await propRes.json();
-        const gatesList = document.getElementById('gates-list');
-        const proposals = propData.proposals || [];
-        const allAttestations = proposals.flatMap(p => p.attestations.map(a => ({ ...a, agentId: p.agentId })));
-
-        if (allAttestations.length === 0) {
-          gatesList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">Awaiting gate runs</div>';
-        } else {
-          gatesList.innerHTML = allAttestations.map(a => `
-            <div class="p-3 bg-gray-900/90 border border-gray-800 rounded-lg">
-              <div class="flex justify-between items-center mb-1">
-                <span class="font-semibold text-purple-300 font-mono">gate:\${a.gateId}</span>
-                <span class="px-2 py-0.5 rounded text-[10px] font-bold \${a.verdict === 'pass' ? 'bg-emerald-950 text-emerald-300 border border-emerald-800' : 'bg-red-950 text-red-300 border border-red-800'}">\${a.verdict.toUpperCase()}</span>
-              </div>
-              <div class="text-[11px] text-gray-300 mb-1 font-mono">commit: \${a.commitSha.slice(0, 10)}</div>
-              <div class="text-[11px] text-gray-400">\${a.summary}</div>
-              <div class="mt-1 text-[9px] text-gray-500 font-mono truncate">sig: \${a.signature.slice(0, 32)}...</div>
-            </div>
-          `).join('');
-        }
-
-        // 3. Fetch learnings (.git/learnings/)
-        const learnRes = await fetch('/v1/learnings');
-        const learnData = await learnRes.json();
-        const memList = document.getElementById('memory-list');
-        const learnings = learnData.learnings || [];
-
-        if (learnings.length === 0) {
-          memList.innerHTML = '<div class="text-gray-500 italic p-6 text-center border border-dashed border-gray-800 rounded-lg">No learnings crystallized</div>';
-        } else {
-          memList.innerHTML = learnings.map(l => `
-            <div class="p-3 bg-gray-900/90 border border-amber-900/40 rounded-lg">
-              <div class="font-bold text-amber-300 text-xs mb-1">\${l.title}</div>
-              <div class="text-[11px] text-gray-300 border-l-2 border-amber-500 pl-2 my-2 italic">\${l.rule}</div>
-              <div class="text-[10px] text-gray-500 font-mono">\${l.filePath}</div>
-            </div>
-          `).join('');
-        }
-
-        // 4. Fetch interventions
-        const intRes = await fetch('/v1/interventions');
-        const intData = await intRes.json();
-        const drawer = document.getElementById('intervention-drawer');
-        if (intData.interventions && intData.interventions.length > 0) {
-          const first = intData.interventions[0];
-          document.getElementById('int-title').innerText = first.title;
-          document.getElementById('int-desc').innerText = first.description;
-          drawer.classList.remove('hidden');
-          window.activeInterventionId = first.id;
-        } else {
-          drawer.classList.add('hidden');
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-
-    async function runSimulation() {
-      const btn = document.getElementById('sim-btn');
-      btn.innerText = '⏳ Simulating...';
-      btn.disabled = true;
-      try {
-        await fetch('/v1/admin/simulate', { method: 'POST' });
-        await refreshRadar();
-      } finally {
-        btn.innerText = '▶️ Run Swarm Simulation';
-        btn.disabled = false;
-      }
-    }
-
-    async function resolveIntervention(decision) {
-      if (!window.activeInterventionId) return;
-      await fetch('/v1/interventions/' + window.activeInterventionId + '/resolve', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ decision })
-      });
-      refreshRadar();
-    }
-
-    setInterval(refreshRadar, 2000);
-    refreshRadar();
-  </script>
-</body>
-</html>`);
-});
 
 export default app;
