@@ -1,34 +1,12 @@
-export interface ArtifactRepo {
-  createToken(
-    scope: 'read' | 'write' | 'admin',
-    ttlSeconds?: number
-  ): Promise<{ token: string; plaintext: string; expiresAt: number }>;
-  listTokens(): Promise<Array<{ id: string; scope: string; expiresAt: number }>>;
-  revokeToken(tokenId: string): Promise<void>;
-  fork(
-    name: string,
-    options?: { bare?: boolean; branch?: string }
-  ): Promise<{ remote: string; token: string; repo: ArtifactRepo }>;
-  getMetadata(): Promise<{
-    name: string;
-    namespace: string;
-    defaultBranch: string;
-    commitsCount: number;
-    headSha?: string;
-  }>;
-}
-
-export interface ArtifactsBinding {
-  create(repoName: string): Promise<{ remote: string; token: string; repo: ArtifactRepo }>;
-  fork?(sourceRepo: string, forkName: string): Promise<{ remote: string; token: string; repo: ArtifactRepo }>;
-  get(repoName: string): Promise<ArtifactRepo | null>;
-  list(): Promise<Array<{ name: string; namespace: string }>>;
-  import(repoName: string, sourceGitUrl: string): Promise<ArtifactRepo>;
-  delete(repoName: string): Promise<void>;
-}
+// Cloudflare Artifacts types come from @cloudflare/workers-types
+// (global `Artifacts` / `ArtifactsRepo` interfaces). Do NOT hand-roll them:
+// the binding's real shapes are get() throws NOT_FOUND (never null),
+// create()/fork() return ArtifactsCreateRepoResult (metadata + initial
+// token, not a repo handle), and repo metadata comes from info()/log(),
+// not getMetadata()/headSha.
 
 export interface Env {
-  ARTIFACTS: ArtifactsBinding;
+  ARTIFACTS: Artifacts;
   CHANGE_PROPOSAL_DO: DurableObjectNamespace;
   TRIBUTARY_KV: KVNamespace;
 
