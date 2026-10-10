@@ -1,25 +1,42 @@
-import { ArtifactsBinding, ArtifactRepo } from '../env';
+// Artifacts types are the real globals from @cloudflare/workers-types.
+// Verified against the live binding 2026-10-10:
+// - get() THROWS ArtifactsError NOT_FOUND for a missing repo (never null)
+// - create()/fork() return ArtifactsCreateRepoResult (metadata + initial
+//   token), NOT a repo handle — re-get() the handle afterwards
+// - repo metadata comes from info()/log(), createToken() returns
+//   { id, plaintext, scope, expiresAt: ISO-8601 string }
 
 export interface MicroForkResult {
   forkName: string;
   remoteUrl: string;
   token: string;
-  expiresAt: number;
+  /** ISO-8601 expiry timestamp (as returned by the binding). */
+  expiresAt: string;
+}
+
+/** True when err is the binding's NOT_FOUND (missing repo), by code or message. */
+export function isArtifactsNotFound(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    (err as { code?: string }).code === 'NOT_FOUND' ||
+    /not found/i.test(err.message)
+  );
 }
 
 export class ArtifactsClient {
-  constructor(private artifacts: ArtifactsBinding) {}
+  constructor(private artifacts: Artifacts) {}
 
   /**
    * Initializes or gets the primary base repository
    */
-  async ensureBaseRepo(repoName: string): Promise<ArtifactRepo> {
-    const existing = await this.artifacts.get(repoName);
-    if (existing) {
-      return existing;
+  async ensureBaseRepo(repoName: string): Promise<ArtifactsRepo> {
+    try {
+      return await this.artifacts.get(repoName);
+    } catch (err) {
+      if (!isArtifactsNotFound(err)) throw err;
     }
-    const { repo } = await this.artifacts.create(repoName);
-    return repo;
+    await this.artifacts.create(repoName);
+    return this.artifacts.get(repoName);
   }
 
   /**
@@ -37,14 +54,18 @@ export class ArtifactsClient {
 
     // Cloudflare Artifacts programmatic fork primitive (repo handle)
     const base = await this.ensureBaseRepo(baseRepo);
-    const { remote, repo } = await base.fork(forkName);
+    const forked = await base.fork(forkName);
 
     // Mint scoped, short-lived Git write token for this micro-fork
-    const { plaintext, expiresAt } = await repo.createToken('write', ttlSeconds);
+    const forkHandle = await this.artifacts.get(forkName);
+    const { plaintext, expiresAt } = await forkHandle.createToken(
+      'write',
+      ttlSeconds
+    );
 
     return {
       forkName,
-      remoteUrl: remote,
+      remoteUrl: forked.remote,
       token: plaintext,
       expiresAt,
     };
