@@ -6,6 +6,14 @@ import { ChangeProposal, Claim, Attestation, InterventionCard, SymbolIndex, Lear
 import { signAttestation, verifyAttestation } from './core/attestation';
 import { evaluateMergeGate } from './core/merge-gate';
 import { generateLearningMarkdown, generateLearningFilename } from './core/learnings';
+import http from 'isomorphic-git/http/web';
+import { MemoryFS } from './memory-fs';
+import {
+  physicalMerge,
+  MergeConflictError,
+  MainlineMovedError,
+  type PhysicalMergeResult,
+} from './core/physical-merge';
 
 export { ChangeProposalDO } from './do/change-proposal';
 export { CoordinatorDO } from './do/coordinator';
@@ -221,6 +229,7 @@ app.post('/v1/proposals', async (c) => {
         id: proposalId,
         baselineRepo: baseline,
         forkRepo,
+        forkRemote: forked.remote,
         agentId,
         taskRef,
         baselineParentSha,
@@ -443,6 +452,63 @@ app.post('/v1/proposals/:id/merge', async (c) => {
     }, evalResult.status);
   }
 
+  // Physical merge: integrate the fork's commits into the baseline repo.
+  // Artifacts has no merge endpoint — the Worker is the merge authority, so
+  // it performs the merge itself via isomorphic-git (Workers have no git
+  // binary). Fast-forward when the fork is a descendant, merge commit
+  // otherwise (author = agent, committer = Tributary). The push is
+  // CAS-guarded: if mainline moved under us the push is rejected.
+  const accountId = c.env.ARTIFACTS_ACCOUNT_ID;
+  const remoteFor = (repo: string) =>
+    `https://${accountId}.artifacts.cloudflare.net/git/tributary/${repo}.git`;
+  const baselineRemote =
+    (baseRepo as unknown as { remote?: string }).remote ?? remoteFor(proposal.baselineRepo);
+  const forkRemote =
+    proposal.forkRemote ?? remoteFor(proposal.forkRepo);
+  const tokenSecret = (t: string) => t.split('?')[0];
+
+  const baselineToken = await baseRepo.createToken('write', 600);
+  const forkRepoHandle = await getRepoHandle(c.env, proposal.forkRepo);
+  const forkToken = await forkRepoHandle.createToken('read', 600);
+
+  let physical: PhysicalMergeResult;
+  try {
+    physical = await physicalMerge({
+      fs: new MemoryFS(),
+      http,
+      dir: '/merge',
+      baselineRemote,
+      forkRemote,
+      baselineBranch: 'main',
+      forkBranch: 'main',
+      baselineAuth: { username: 'x', password: tokenSecret(baselineToken.plaintext) },
+      forkAuth: { username: 'x', password: tokenSecret(forkToken.plaintext) },
+      author: {
+        name: proposal.agentId,
+        email: `${proposal.agentId.toLowerCase().replace(/[^a-z0-9]+/g, '-') }@tributary.local`,
+      },
+      committer: { name: 'Tributary', email: 'merge@tributary.local' },
+    });
+  } catch (e) {
+    if (e instanceof MergeConflictError) {
+      return c.json(
+        {
+          error: 'Merge conflicts — rebase the fork onto mainline and re-attest',
+          code: 'merge_conflict',
+          details: e.message,
+        },
+        409
+      );
+    }
+    if (e instanceof MainlineMovedError) {
+      return c.json(
+        { error: 'Mainline moved during merge — rebase and re-attest', code: 'mainline_moved' },
+        409
+      );
+    }
+    throw e;
+  }
+
   // Merge succeeds: mark DO as merged
   await stub.fetch('http://internal/mark-merged', { method: 'POST' });
 
@@ -472,6 +538,8 @@ app.post('/v1/proposals/:id/merge', async (c) => {
     proposalId,
     targetCommitSha: commitSha,
     mainlineSha: currentMainlineSha,
+    mergedSha: physical.mergedSha,
+    fastForward: physical.fastForward,
     crystallizedLearning: learningEntry,
   });
 });

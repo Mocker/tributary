@@ -35,12 +35,12 @@ per-proposal forks, and short-lived scoped tokens. Written 2026-10-10.
   smart-HTTP remotes, overlap detection, HMAC attestation signing/verification,
   merge-gate evaluation (live claims + attestations on the exact SHA + CAS on
   the target ref), claim leases + heartbeats, SSE context bus, radar UI.
-- **Planned, not built**: the *physical* merge — the merge route currently
-  marks the proposal DO merged, releases claims, and crystallizes learnings,
-  but does not yet execute the git-level fast-forward/three-way merge of the
-  fork into the baseline mainline via Artifacts. Also planned: the 24h fork
-  sweeper, and a real gate executor (today the gate asserts verdicts; see
-  `docs/BUILD_PLAN.md` §11).
+- **Real**: the *physical* merge — the merge route integrates the fork's
+  commits into the baseline via isomorphic-git in the Worker (fast-forward
+  when the fork is a descendant, merge commit otherwise; author = agent,
+  committer = Tributary; push is CAS-guarded). See `src/core/physical-merge.ts`.
+- **Planned, not built**: the 24h fork sweeper, and a real gate executor
+  (today the gate asserts verdicts; see `docs/BUILD_PLAN.md` §11).
 - **Simulation button** (`POST /v1/admin/simulate`, radar "Run Swarm
   Simulation"): a synthetic scenario rehearsal. The overlap detection,
   attestation signing, and learning crystallization it exercises are the real

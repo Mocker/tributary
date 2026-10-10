@@ -14,4 +14,5 @@ export interface Env {
   ENVIRONMENT?: string;
   GATE_HMAC_SECRET: string;
   DEFAULT_BASELINE_REPO?: string;
+  ARTIFACTS_ACCOUNT_ID: string;
 }

@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "hono": "^4.6.0",
+    "isomorphic-git": "^1.43.3",
     "ulid": "^2.4.0",
     "zod": "^3.23.8"
   },

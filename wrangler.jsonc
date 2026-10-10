@@ -61,6 +61,7 @@
 
   "vars": {
     "ENVIRONMENT": "development",
-    "DEFAULT_BASELINE_REPO": "demo-shop"
+    "DEFAULT_BASELINE_REPO": "demo-shop",
+    "ARTIFACTS_ACCOUNT_ID": "162681bef56337d181bf689c4b77268c"
   }
 }
