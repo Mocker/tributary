@@ -1,6 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "tributary",
+  "account_id": "162681bef56337d181bf689c4b77268c",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
@@ -46,13 +47,12 @@
   "kv_namespaces": [
     {
       "binding": "TRIBUTARY_KV",
-      "id": "tributary_kv_namespace_id"
+      "id": "8221143a7e76470a897ce32612a52acd"
     }
   ],
 
   "vars": {
     "ENVIRONMENT": "development",
-    "GATE_HMAC_SECRET": "tributary-demo-secret-2026",
     "DEFAULT_BASELINE_REPO": "demo-shop"
   }
 }
