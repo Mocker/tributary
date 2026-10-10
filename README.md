@@ -97,49 +97,71 @@ tributary/
 
 ## 📦 Run Instructions (For Judges & Developers)
 
-### 1. Devbox Container Launch
+**Live deployment:** https://tributary.sokercap.workers.dev — radar UI + full `/v1` API on Workers + Artifacts + Durable Objects.
 
-Tributary is pre-configured with Ryan's isolated Docker Devbox environment:
+### Prerequisites
+
+Node 24+, npm. No Docker, no Devbox, no Cloudflare account needed for the local path.
+
+### 1. Run the test suite
 
 ```bash
-# Launch isolated Devbox container with port 8787 forwarded
-devbox start tributary -p 8787:8787
-
-# Connect to container shell
-devbox shell tributary
+npm install
+npm test         # 23 tests: overlap detection, HMAC attestations, CAS merge gate,
+                 # Z3 machine-checked invariants, CoordinatorDO (incl. the
+                 # cross-isolate 409 regression test)
+npm run typecheck
 ```
 
-### 2. Run Deterministic Unit Tests
+### 2. Run the worker locally
 
 ```bash
-# Run the pure logic test suite (overlap detection, HMAC attestations, CAS merge gate)
-npm test
+npm run dev      # Worker + radar UI at http://localhost:8787
 ```
 
-### 3. Run the Competition Demo Rehearsal
+Drive the API directly:
 
 ```bash
-# Run the end-to-end 6-act simulation script matching Section 9 of the build plan
-npm run simulate
+# Mint a proposal (real Artifacts fork when deployed with the binding)
+curl -X POST localhost:8787/v1/proposals \
+  -H 'Content-Type: application/json' \
+  -d '{"baseline":"demo-shop","taskRef":"AUTH-101","agentId":"agent-a"}'
+
+# Claim before you work — overlapping claims get HTTP 409 here,
+# not a merge conflict three hours later
+curl -X POST localhost:8787/v1/proposals/<id>/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"paths":["src/auth/**"],"symbols":["createSession"],"rationale":"auth upgrade"}'
+
+# Scripted 6-act scenario through the real coordinator paths:
+curl -X POST localhost:8787/v1/admin/simulate
 ```
 
-### 4. Run Cloudflare Workers Dev Server
+### 3. Run against the live deployment
 
 ```bash
-# Start local Hono worker and live Radar UI at http://localhost:8787
-npm run dev
+# Seed the demo-shop baseline into Artifacts (once per namespace):
+npm run seed -- --worker https://tributary.sokercap.workers.dev
+
+# Then use the same /v1 API against the live worker URL.
+```
+
+### 4. Deploy your own
+
+```bash
+npx wrangler deploy   # requires a Workers Paid plan (Artifacts requirement)
 ```
 
 ---
 
-## 🎬 The 6-Act Competition Demo Summary
+## 🎬 The 6-Act Competition Demo
 
-1. **Act 1 (Problem)**: Shows how standard Git fails when Agent A and Agent B concurrently edit `src/session.ts` and discover conflicts only at merge time.
-2. **Act 2 (Prevention)**: Agent A claims `src/auth/**` + `createSession`. Agent B attempts to claim `src/session.ts` and receives instant **HTTP 409 Conflict**: *"conflicts with Agent A's claim on src/session.ts (symbol createSession)"*. Zero compute wasted!
-3. **Act 3 (Verification)**: Agent B fixes a bug and runs gate `test`. Fails first, fixes, and passes with signed HMAC attestation.
-4. **Act 4 (Memory)**: Invariant rule is crystallized directly into `.git/learnings/` in the repository.
-5. **Act 5 (Scale)**: Rapid fork latency benchmark demonstrating that fork-per-task in Artifacts enables tens of thousands of concurrent agents.
-6. **Act 6 (Close)**: Core thesis recap — *"GitHub coordinates humans. Tributary coordinates agents."*
+1. **Act 1 (Problem):** Two agents edit `src/session.ts` concurrently; standard Git discovers the conflict only at merge time.
+2. **Act 2 (Prevention):** Agent A claims `src/auth/**` + `createSession`. Agent B claims `src/session.ts` → instant **HTTP 409**: *"conflicts with Agent A's claim on src/session.ts (symbol createSession)"*. The CoordinatorDO (single-writer Durable Object) makes this atomic across all Workers isolates — verified live. Zero compute wasted.
+3. **Act 3 (Verification):** Agent B narrows its claim, runs gate `test`, and records an HMAC-signed attestation on the exact commit SHA.
+4. **Act 4 (Memory):** The session-boundary invariant crystallizes into `.git/learnings/` via the API.
+5. **Act 5 (Scale):** Fork-per-proposal in Artifacts — median **3.08s** end-to-end per fork (measured live, n=5). Parallelize the scale shot; 50 serial forks ≈ 2.5 min.
+6. **Act 6 (Close):** *"GitHub coordinates humans. Tributary coordinates agents."*
 
 ---
 
