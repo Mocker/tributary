@@ -32,6 +32,7 @@ function sh(cmd: string, args: string[], cwd?: string): string {
 const worker = arg('worker', 'http://localhost:8787').replace(/\/$/, '');
 const baseline = arg('baseline', 'demo-shop');
 const dir = resolve(arg('dir', './demo-shop'));
+const account = arg('account', '162681bef56337d181bf689c4b77268c');
 
 console.log(`Seeding baseline '${baseline}' from ${dir} via ${worker} ...`);
 
@@ -47,13 +48,15 @@ const seed = (await seedRes.json()) as {
   error?: string;
   code?: string;
 };
-if (!seedRes.ok || !seed.remote || !seed.token) {
+if (!seedRes.ok || !seed.token) {
   console.error(
     `seed endpoint failed (HTTP ${seedRes.status}): ${seed.error ?? 'unknown'} [${seed.code ?? '?'}]`
   );
   process.exit(1);
 }
-console.log(`repo ${seed.created ? 'created' : 'already existed'} — remote: ${seed.remote}`);
+const remote = seed.remote ?? `https://${account}.artifacts.cloudflare.net/git/tributary/${baseline}.git`;
+if (!seed.remote) console.log(`(route returned no remote; using constructed fallback)`);
+console.log(`repo ${seed.created ? 'created' : 'already existed'} — remote: ${remote}`);
 
 const tmp = mkdtempSync(join(tmpdir(), 'tributary-seed-'));
 try {
@@ -66,7 +69,7 @@ try {
 
   const header = `http.extraHeader=Authorization: Bearer ${seed.token}`;
   try {
-    sh('git', ['-c', header, 'push', seed.remote, 'HEAD:main'], tmp);
+    sh('git', ['-c', header, 'push', remote, 'HEAD:main'], tmp);
     console.log('push: ok');
   } catch (e: any) {
     const out: string = String(e.stdout ?? '') + String(e.stderr ?? '');
@@ -77,12 +80,12 @@ try {
     }
   }
 
-  const ls = sh('git', ['-c', header, 'ls-remote', seed.remote, 'HEAD'], tmp).trim();
+  const ls = sh('git', ['-c', header, 'ls-remote', remote, 'HEAD'], tmp).trim();
   if (!ls) {
     console.error('verify failed: remote has no HEAD ref');
     process.exit(1);
   }
-  console.log(`verify: ${ls.split(/\s/)[0].slice(0, 12)} on ${seed.remote}`);
+  console.log(`verify: ${ls.split(/\s/)[0].slice(0, 12)} on ${remote}`);
   console.log(
     `\nSeeded '${baseline}'. Agents can now POST /v1/proposals { baseline: '${baseline}' } for real forks.`
   );
