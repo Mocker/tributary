@@ -3,12 +3,12 @@ import { cors } from 'hono/cors';
 import { ulid } from 'ulid';
 import { Env } from './env';
 import { ChangeProposal, Claim, Attestation, InterventionCard, SymbolIndex, LearningRule } from './types';
-import { detectOverlap } from './core/overlap';
 import { signAttestation, verifyAttestation } from './core/attestation';
 import { evaluateMergeGate } from './core/merge-gate';
 import { generateLearningMarkdown, generateLearningFilename } from './core/learnings';
 
 export { ChangeProposalDO } from './do/change-proposal';
+export { CoordinatorDO } from './do/coordinator';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -25,11 +25,45 @@ const DEFAULT_SYMBOL_INDEX: SymbolIndex = {
   },
 };
 
-// In-memory / KV registry of active claims across all proposals for fast overlap check
-const activeClaimsRegistry: Map<string, Claim> = new Map();
-const proposalsRegistry: Map<string, ChangeProposal> = new Map();
-const interventionsRegistry: Map<string, InterventionCard> = new Map();
-const learningsRegistry: Map<string, LearningRule> = new Map();
+// Global coordination state lives in the CoordinatorDO (single instance, id
+// 'global'). A module-level Map in the Worker is per-isolate and NOT shared:
+// the pre-coordinator registries let overlapping claims through on different
+// isolates and made list endpoints return stale/empty results. See
+// src/do/coordinator.ts.
+function coordinator(env: Env) {
+  return env.COORDINATOR_DO.get(env.COORDINATOR_DO.idFromName('global'));
+}
+
+async function coordCall(
+  env: Env,
+  path: string,
+  init?: RequestInit
+): Promise<{ status: number; body: any }> {
+  const res = await coordinator(env).fetch(`http://internal${path}`, init);
+  let body: any = null;
+  try {
+    body = await res.json();
+  } catch {
+    /* non-JSON body */
+  }
+  return { status: res.status, body };
+}
+
+function coordPost(env: Env, path: string, payload: unknown) {
+  return coordCall(env, path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
+function coordPatch(env: Env, path: string, payload: unknown) {
+  return coordCall(env, path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
 
 // Helper to get or create the Artifacts baseline repo.
 // Helper to get or create the Artifacts baseline repo.
@@ -195,7 +229,7 @@ app.post('/v1/proposals', async (c) => {
   );
 
   const proposalState = await initResponse.json<ChangeProposal>();
-  proposalsRegistry.set(proposalId, proposalState);
+  await coordPost(c.env, '/proposals', { proposal: proposalState });
 
   return c.json({
     proposalId,
@@ -242,54 +276,9 @@ app.post('/v1/proposals/:id/claims', async (c) => {
   // Fetch symbol index (default or from KV)
   const symbolIndex = DEFAULT_SYMBOL_INDEX;
 
-  // Run overlap detection against active claims
-  const liveClaims = Array.from(activeClaimsRegistry.values());
-  const overlap = detectOverlap(
-    { agentId: proposal.agentId, paths, symbols },
-    liveClaims,
-    symbolIndex
-  );
-
-  if (overlap.hasOverlap) {
-    // Create an intervention card for human radar if neither yields
-    const interventionId = `int_${ulid()}`;
-    const card: InterventionCard = {
-      id: interventionId,
-      proposalId,
-      title: `Claim Overlap: ${proposal.agentId} vs ${overlap.conflictingClaim?.agentId}`,
-      description: overlap.reason || 'Overlapping file/symbol claims detected.',
-      conflictingClaim: overlap.conflictingClaim,
-      decision: 'pending',
-      createdAt: Date.now(),
-    };
-    interventionsRegistry.set(interventionId, card);
-
-    // Emit on the proposal's SSE context bus so the radar surfaces the rejection live
-    try {
-      await stub.fetch(new Request('http://internal/broadcast', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'claim_rejected',
-          proposalId,
-          agentId: proposal.agentId,
-          reason: overlap.reason,
-          conflictingClaim: overlap.conflictingClaim,
-          interventionId,
-        }),
-      }));
-    } catch { /* bus broadcast is best-effort */ }
-
-    return c.json({
-      error: 'Claim conflict detected',
-      code: 'claim_overlap',
-      reason: overlap.reason,
-      conflictingClaim: overlap.conflictingClaim,
-      interventionId,
-    }, 409);
-  }
-
-  // Accept claim with 30m lease
+  // Atomic declare via the coordinator DO: overlap-check + insert happen in
+  // one single-writer invocation, so concurrent claims landing on different
+  // isolates cannot both slip through.
   const claimId = `claim_${ulid()}`;
   const claim: Claim = {
     id: claimId,
@@ -303,14 +292,56 @@ app.post('/v1/proposals/:id/claims', async (c) => {
     createdAt: Date.now(),
   };
 
-  activeClaimsRegistry.set(claimId, claim);
+  const declareRes = await coordPost(c.env, '/claims/declare', { claim, symbolIndex });
 
-  // Store on DO
+  if (declareRes.status === 409) {
+    const { reason, conflictingClaim } = declareRes.body;
+    // Create an intervention card for human radar if neither yields
+    const interventionId = `int_${ulid()}`;
+    const card: InterventionCard = {
+      id: interventionId,
+      proposalId,
+      title: `Claim Overlap: ${proposal.agentId} vs ${conflictingClaim?.agentId}`,
+      description: reason || 'Overlapping file/symbol claims detected.',
+      conflictingClaim,
+      decision: 'pending',
+      createdAt: Date.now(),
+    };
+    await coordPost(c.env, '/interventions', { card });
+
+    // Emit on the proposal's SSE context bus so the radar surfaces the rejection live
+    try {
+      await stub.fetch(new Request('http://internal/broadcast', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'claim_rejected',
+          proposalId,
+          agentId: proposal.agentId,
+          reason,
+          conflictingClaim,
+          interventionId,
+        }),
+      }));
+    } catch { /* bus broadcast is best-effort */ }
+
+    return c.json({
+      error: 'Claim conflict detected',
+      code: 'claim_overlap',
+      reason,
+      conflictingClaim,
+      interventionId,
+    }, 409);
+  }
+
+  // Store on the proposal DO (durable per-proposal record) and mirror into
+  // the coordinator's proposal snapshot (radar list)
   await stub.fetch(new Request('http://internal/claim', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(claim),
   }));
+  await coordPost(c.env, `/proposals/${proposalId}/claim`, { claim });
 
   return c.json({ success: true, claim }, 201);
 });
@@ -320,18 +351,14 @@ app.post('/v1/proposals/:id/claims/:claimId/heartbeat', async (c) => {
   const proposalId = c.req.param('id');
   const claimId = c.req.param('claimId');
 
-  const claim = activeClaimsRegistry.get(claimId);
-  if (!claim) return c.json({ error: 'Claim not found or expired' }, 404);
-
-  const newExpiry = Date.now() + 30 * 60 * 1000;
-  claim.leaseExpiresAt = newExpiry;
-  activeClaimsRegistry.set(claimId, claim);
+  const hb = await coordPost(c.env, '/claims/heartbeat', { claimId });
+  if (hb.status === 404) return c.json({ error: 'Claim not found or expired' }, 404);
 
   const doId = c.env.CHANGE_PROPOSAL_DO.idFromName(proposalId);
   const stub = c.env.CHANGE_PROPOSAL_DO.get(doId);
   await stub.fetch(`http://internal/claims/${claimId}/heartbeat`, { method: 'POST' });
 
-  return c.json({ success: true, claimId, leaseExpiresAt: newExpiry });
+  return c.json({ success: true, claimId, leaseExpiresAt: hb.body.leaseExpiresAt });
 });
 
 // 5. POST /v1/proposals/:id/claims/:claimId/release — Voluntarily release a claim
@@ -339,7 +366,7 @@ app.post('/v1/proposals/:id/claims/:claimId/release', async (c) => {
   const proposalId = c.req.param('id');
   const claimId = c.req.param('claimId');
 
-  activeClaimsRegistry.delete(claimId);
+  await coordPost(c.env, '/claims/release', { claimId });
 
   const doId = c.env.CHANGE_PROPOSAL_DO.idFromName(proposalId);
   const stub = c.env.CHANGE_PROPOSAL_DO.get(doId);
@@ -382,6 +409,9 @@ app.post('/v1/proposals/:id/gates/:gateId/run', async (c) => {
     body: JSON.stringify(attestation),
   }));
 
+  // Mirror attestation into the coordinator's proposal snapshot (radar panel)
+  await coordPost(c.env, `/proposals/${proposalId}/attestation`, { attestation });
+
   return c.json({ success: true, attestation }, verdict === 'pass' ? 200 : 422);
 });
 
@@ -416,10 +446,10 @@ app.post('/v1/proposals/:id/merge', async (c) => {
   // Merge succeeds: mark DO as merged
   await stub.fetch('http://internal/mark-merged', { method: 'POST' });
 
-  // Release claims associated with this proposal
-  for (const claim of proposal.claims) {
-    activeClaimsRegistry.delete(claim.id);
-  }
+  // Release claims associated with this proposal (coordinator index) and
+  // mark the snapshot merged
+  await coordPost(c.env, '/claims/release-by-proposal', { proposalId });
+  await coordPatch(c.env, `/proposals/${proposalId}`, { status: 'merged' });
 
   // Crystallize learning if provided
   let learningEntry: LearningRule | undefined;
@@ -434,7 +464,7 @@ app.post('/v1/proposals/:id/merge', async (c) => {
       rule: learning.rule,
       filePath: generateLearningFilename(today, slug),
     };
-    learningsRegistry.set(slug, learningEntry);
+    await coordPost(c.env, '/learnings', { rule: learningEntry });
   }
 
   return c.json({
@@ -455,35 +485,28 @@ app.get('/v1/proposals/:id/events', async (c) => {
 });
 
 // 9. GET /v1/learnings — List .git/learnings/ entries
-app.get('/v1/learnings', (c) => {
-  return c.json({
-    learnings: Array.from(learningsRegistry.values()),
-  });
+app.get('/v1/learnings', async (c) => {
+  const { body } = await coordCall(c.env, '/learnings');
+  return c.json({ learnings: body.learnings ?? [] });
 });
 
-// 12. GET /v1/claims — List active claims
-app.get('/v1/claims', (c) => {
-  const now = Date.now();
-  const valid = Array.from(activeClaimsRegistry.values()).filter(
-    (claim) => claim.status === 'active' && claim.leaseExpiresAt > now
-  );
-  return c.json({ claims: valid });
+// 12. GET /v1/claims — List active claims (coordinator global index)
+app.get('/v1/claims', async (c) => {
+  const { body } = await coordCall(c.env, '/claims');
+  return c.json({ claims: body.claims ?? [] });
 });
 
-// 13. GET /v1/proposals — List active proposals & queue state
-app.get('/v1/proposals', (c) => {
-  return c.json({
-    proposals: Array.from(proposalsRegistry.values()),
-  });
+// 13. GET /v1/proposals — List proposals & queue state (coordinator snapshots)
+app.get('/v1/proposals', async (c) => {
+  const { body } = await coordCall(c.env, '/proposals');
+  return c.json({ proposals: body.proposals ?? [] });
 });
 
 // 10. GET /v1/interventions — List intervention cards (pending by default)
-app.get('/v1/interventions', (c) => {
+app.get('/v1/interventions', async (c) => {
   const status = c.req.query('status') || 'pending';
-  const cards = Array.from(interventionsRegistry.values()).filter(
-    (card) => status === 'all' || card.decision === status
-  );
-  return c.json({ interventions: cards });
+  const { body } = await coordCall(c.env, `/interventions?status=${encodeURIComponent(status)}`);
+  return c.json({ interventions: body.interventions ?? [] });
 });
 
 // 11. POST /v1/interventions/:id/resolve — 1-tap approve/reject
@@ -495,25 +518,17 @@ app.post('/v1/interventions/:id/resolve', async (c) => {
   const id = c.req.param('id');
   const { decision } = await c.req.json<{ decision: 'approve' | 'reject' }>();
 
-  const card = interventionsRegistry.get(id);
-  if (!card) return c.json({ error: 'Intervention not found' }, 404);
   if (decision !== 'approve' && decision !== 'reject') {
     return c.json({ error: "decision must be 'approve' or 'reject'" }, 400);
   }
-  if (card.decision !== 'pending') {
-    return c.json({ error: `Intervention already ${card.decision}` }, 409);
-  }
 
-  card.decision = decision === 'approve' ? 'approved' : 'rejected';
-  card.resolvedAt = Date.now();
-  interventionsRegistry.set(id, card);
+  const resolved = await coordPost(c.env, `/interventions/${id}/resolve`, { decision });
+  if (resolved.status === 404) return c.json({ error: 'Intervention not found' }, 404);
+  if (resolved.status === 409) return c.json({ error: resolved.body.error }, 409);
+  const card: InterventionCard = resolved.body.intervention;
 
   if (decision === 'approve' && card.conflictingClaim) {
-    const conflict = activeClaimsRegistry.get(card.conflictingClaim.id);
-    if (conflict) {
-      conflict.status = 'superseded';
-      activeClaimsRegistry.delete(conflict.id);
-    }
+    await coordPost(c.env, '/claims/supersede', { claimId: card.conflictingClaim.id });
   }
 
   // Emit on the proposal's SSE context bus
@@ -585,91 +600,102 @@ app.post('/v1/admin/seed', async (c) => {
   }, created ? 201 : 200);
 });
 
-// 14. POST /v1/admin/simulate — Trigger in-browser swarm collision demo
+// 14. POST /v1/admin/simulate — Scripted swarm-collision scenario.
+//
+// The scenario itself is synthetic (scripted agents, no Artifacts forks), but
+// every state change goes through the real coordinator paths: atomic declare,
+// intervention cards, signed attestations, learnings. Nothing bypasses the
+// coordination logic, so the radar shows exactly what real agents would
+// produce. See docs/repos.md.
 app.post('/v1/admin/simulate', async (c) => {
-  // Step 1: Agent A claims auth
-  const propAId = `prop_auth_${ulid().slice(-6)}`;
-  proposalsRegistry.set(propAId, {
-    id: propAId,
+  const now = Date.now();
+  const mkProposal = (id: string, agentId: string, taskRef: string): ChangeProposal => ({
+    id,
     baselineRepo: 'demo-shop',
-    forkRepo: `demo-shop__p_${propAId}`,
-    agentId: 'Agent A (Auth)',
-    taskRef: 'AUTH-101',
-    status: 'working',
-    claims: [],
-    attestations: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-  });
-
-  const claimA: Claim = {
-    id: `claim_${ulid().slice(-6)}`,
-    proposalId: propAId,
-    agentId: 'Agent A (Auth)',
-    paths: ['src/auth/**'],
-    symbols: ['createSession'],
-    rationale: 'Auth session lifecycle upgrade',
-    leaseExpiresAt: Date.now() + 1800000,
-    status: 'active',
-    createdAt: Date.now(),
-  };
-  activeClaimsRegistry.set(claimA.id, claimA);
-  proposalsRegistry.get(propAId)!.claims.push(claimA);
-
-  // Step 2: Agent B attempts overlapping claim on src/session.ts
-  const propBId = `prop_billing_${ulid().slice(-6)}`;
-  proposalsRegistry.set(propBId, {
-    id: propBId,
-    baselineRepo: 'demo-shop',
-    forkRepo: `demo-shop__p_${propBId}`,
-    agentId: 'Agent B (Billing)',
-    taskRef: 'BILL-402',
+    forkRepo: `demo-shop__p_${id}`,
+    agentId,
+    taskRef,
     status: 'claiming',
     claims: [],
     attestations: [],
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
   });
 
-  // Check overlap for Agent B
-  const overlap = detectOverlap(
-    { agentId: 'Agent B (Billing)', paths: ['src/billing/**', 'src/session.ts'] },
-    Array.from(activeClaimsRegistry.values()),
-    DEFAULT_SYMBOL_INDEX
-  );
+  const propA = mkProposal(`prop_auth_${ulid().slice(-6)}`, 'Agent A (Auth)', 'AUTH-101');
+  const propB = mkProposal(`prop_billing_${ulid().slice(-6)}`, 'Agent B (Billing)', 'BILL-402');
+  await coordPost(c.env, '/proposals', { proposal: propA });
+  await coordPost(c.env, '/proposals', { proposal: propB });
 
-  let interventionCard: InterventionCard | undefined;
-  if (overlap.hasOverlap) {
-    const intId = `int_${ulid().slice(-6)}`;
-    interventionCard = {
-      id: intId,
-      proposalId: propBId,
-      title: `Claim Overlap: Agent B vs Agent A`,
-      description: overlap.reason || 'Overlapping claim on src/session.ts',
-      conflictingClaim: overlap.conflictingClaim,
-      decision: 'pending',
-      createdAt: Date.now(),
-    };
-    interventionsRegistry.set(intId, interventionCard);
+  // Step 1: Agent A claims auth + createSession via the real atomic declare
+  const claimA: Claim = {
+    id: `claim_${ulid().slice(-6)}`,
+    proposalId: propA.id,
+    agentId: propA.agentId,
+    paths: ['src/auth/**'],
+    symbols: ['createSession'],
+    rationale: 'Auth session lifecycle upgrade',
+    leaseExpiresAt: now + 1800000,
+    status: 'active',
+    createdAt: now,
+  };
+  const decA = await coordPost(c.env, '/claims/declare', {
+    claim: claimA,
+    symbolIndex: DEFAULT_SYMBOL_INDEX,
+  });
+  if (decA.status === 201) {
+    await coordPost(c.env, `/proposals/${propA.id}/claim`, { claim: claimA });
   }
 
-  // Step 3: Agent B narrows claim to src/billing/**
+  // Step 2: Agent B attempts the overlapping claim -> 409 on the real path
   const claimB: Claim = {
     id: `claim_${ulid().slice(-6)}`,
-    proposalId: propBId,
-    agentId: 'Agent B (Billing)',
+    proposalId: propB.id,
+    agentId: propB.agentId,
+    paths: ['src/billing/**', 'src/session.ts'],
+    symbols: [],
+    rationale: 'Billing refactor touching session',
+    leaseExpiresAt: now + 1800000,
+    status: 'active',
+    createdAt: now,
+  };
+  const decB = await coordPost(c.env, '/claims/declare', {
+    claim: claimB,
+    symbolIndex: DEFAULT_SYMBOL_INDEX,
+  });
+
+  let interventionCard: InterventionCard | undefined;
+  if (decB.status === 409) {
+    interventionCard = {
+      id: `int_${ulid().slice(-6)}`,
+      proposalId: propB.id,
+      title: 'Claim Overlap: Agent B vs Agent A',
+      description: decB.body.reason || 'Overlapping claim on src/session.ts',
+      conflictingClaim: decB.body.conflictingClaim,
+      decision: 'pending',
+      createdAt: now,
+    };
+    await coordPost(c.env, '/interventions', { card: interventionCard });
+  }
+
+  // Step 3: Agent B narrows to src/billing/** and proceeds
+  const claimB2: Claim = {
+    ...claimB,
+    id: `claim_${ulid().slice(-6)}`,
     paths: ['src/billing/**'],
     symbols: ['processPayment'],
     rationale: 'Payment webhook handler update',
-    leaseExpiresAt: Date.now() + 1800000,
-    status: 'active',
-    createdAt: Date.now(),
   };
-  activeClaimsRegistry.set(claimB.id, claimB);
-  proposalsRegistry.get(propBId)!.claims.push(claimB);
-  proposalsRegistry.get(propBId)!.status = 'working';
+  const decB2 = await coordPost(c.env, '/claims/declare', {
+    claim: claimB2,
+    symbolIndex: DEFAULT_SYMBOL_INDEX,
+  });
+  if (decB2.status === 201) {
+    await coordPost(c.env, `/proposals/${propB.id}/claim`, { claim: claimB2 });
+  }
+  await coordPatch(c.env, `/proposals/${propB.id}`, { status: 'working' });
 
-  // Step 4: Gate execution for Agent B (generates signed HMAC attestation)
+  // Step 4: gate attestation (signed, real HMAC path)
   const commitSha = `b202_${ulid().slice(-6)}`;
   const attestation = await signAttestation(
     'test',
@@ -678,13 +704,12 @@ app.post('/v1/admin/simulate', async (c) => {
     'All 12 session and payment invariant assertions passed.',
     c.env.GATE_HMAC_SECRET || 'tributary-demo-secret-2026'
   );
-  proposalsRegistry.get(propBId)!.attestations.push(attestation);
-  proposalsRegistry.get(propBId)!.status = 'gating';
+  await coordPost(c.env, `/proposals/${propB.id}/attestation`, { attestation });
+  await coordPatch(c.env, `/proposals/${propB.id}`, { status: 'gating' });
 
-  // Step 5: Merge with CAS & Epistemic Memory Crystallization
-  proposalsRegistry.get(propBId)!.status = 'merged';
-  activeClaimsRegistry.delete(claimB.id);
-
+  // Step 5: merge + learning crystallization
+  await coordPost(c.env, '/claims/release-by-proposal', { proposalId: propB.id });
+  await coordPatch(c.env, `/proposals/${propB.id}`, { status: 'merged' });
   const today = new Date().toISOString().slice(0, 10);
   const slug = 'session-shared-module';
   const learningRule: LearningRule = {
@@ -697,13 +722,15 @@ app.post('/v1/admin/simulate', async (c) => {
       'src/session.ts is a shared module between auth and billing. Always claim src/session.ts explicitly; never implicitly mutate session contracts inside billing PRs.',
     filePath: generateLearningFilename(today, slug),
   };
-  learningsRegistry.set(slug, learningRule);
+  await coordPost(c.env, '/learnings', { rule: learningRule });
 
   return c.json({
     success: true,
-    message: 'Swarm collision simulation triggered cleanly.',
-    proposalA: propAId,
-    proposalB: propBId,
+    message: 'Swarm collision simulation ran through the real coordinator paths.',
+    proposalA: propA.id,
+    proposalB: propB.id,
+    claimAccepted: decA.status === 201,
+    overlapRejected: decB.status === 409,
     intervention: interventionCard,
     attestation,
     learning: learningRule,
