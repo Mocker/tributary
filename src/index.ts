@@ -530,6 +530,61 @@ app.post('/v1/interventions/:id/resolve', async (c) => {
   return c.json({ success: true, intervention: card });
 });
 
+// 15. POST /v1/admin/seed — Ensure the baseline repo exists in Artifacts and
+// mint a short-lived write token for pushing the seed content.
+//
+// Matches the binding behavior verified against the live API (PR #4,
+// 2026-10-10): get() THROWS NOT_FOUND for a missing repo (never null),
+// create() returns metadata — re-get() the handle afterwards. Any other
+// binding error fails loudly with 503; no mocks on this route.
+// The actual file push happens OUTSIDE the Worker: scripts/seed-baseline.ts
+// takes the returned { remote, token } and pushes the local folder over git
+// smart-HTTP with a Bearer header.
+app.post('/v1/admin/seed', async (c) => {
+  let body: { baseline?: string } = {};
+  try { body = await c.req.json(); } catch { /* default baseline */ }
+  const baseline = body.baseline || 'demo-shop';
+
+  let repo: any;
+  let created = false;
+  try {
+    repo = await c.env.ARTIFACTS.get(baseline);
+  } catch (err) {
+    const code = (err as { code?: string })?.code;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (code !== 'NOT_FOUND' && !/not found/i.test(msg)) {
+      return c.json({ error: `Artifacts binding error: ${msg}`, code: 'artifacts_error' }, 503);
+    }
+    try {
+      await c.env.ARTIFACTS.create(baseline);
+      repo = await c.env.ARTIFACTS.get(baseline);
+      created = true;
+    } catch (e2) {
+      const m2 = e2 instanceof Error ? e2.message : String(e2);
+      return c.json({
+        error: `Artifacts unavailable — is the Workers Paid plan active? (${m2})`,
+        code: 'artifacts_unavailable',
+      }, 503);
+    }
+  }
+
+  const remote: string | null = repo.remote ?? null;
+  const tokenResult: any = await repo.createToken('write', 600);
+  const token: string = tokenResult.plaintext ?? tokenResult.token;
+
+  return c.json({
+    baseline,
+    created,
+    remote,
+    remoteHint: remote
+      ? undefined
+      : 'https://<ACCOUNT_ID>.artifacts.cloudflare.net/git/tributary/<repo>.git',
+    token,
+    tokenExpiresAt: tokenResult.expiresAt,
+    usage: 'git -c http.extraHeader="Authorization: Bearer <token>" push <remote> HEAD:main',
+  }, created ? 201 : 200);
+});
+
 // 14. POST /v1/admin/simulate — Trigger in-browser swarm collision demo
 app.post('/v1/admin/simulate', async (c) => {
   // Step 1: Agent A claims auth

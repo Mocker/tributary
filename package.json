@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "test": "tsx --test test/*.test.ts",
     "simulate": "tsx scripts/run-demo-script.ts",
-    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
+    "seed": "tsx scripts/seed-baseline.ts"
   },
   "dependencies": {
     "hono": "^4.6.0",
