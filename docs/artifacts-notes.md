@@ -30,7 +30,48 @@ Object returned from `create`, `get`, `import`, or `fork`:
 
 ---
 
+---
+
 ## 2. Invariants & Nuances
 1. **Fork Terminology**: Do not claim "zero-copy/O(1) forks". That phrasing is non-canonical. Always report empirically measured fork latency from Phase 0 spike tests.
 2. **Miniflare Limitation**: Miniflare local simulation of Artifacts acts as a remote proxy to Cloudflare's edge storage. Local offline emulation without an API token requires mock fixtures.
 3. **Token Scoping**: Scoped write tokens are locked to the specific micro-fork (`demo-shop__p_<ulid>`) and expire automatically after their TTL. Mainline repo write tokens are strictly held by the Tributary Worker.
+
+---
+
+## 3. Deployment prerequisites (verified 2026-10-10)
+
+- **Wrangler ≥ 4.84.0 required.** The `[[artifacts]]` binding config key was added
+  in wrangler 4.84.0 (workers-sdk PR #13326). Wrangler 3.114.17 warns
+  `Unexpected fields found in top-level field: "artifacts"` and silently drops
+  the binding — the deployed Worker then falls back to the mock Artifacts
+  handle in `getOrInitArtifacts` (src/index.ts), which would fake every fork.
+  Repo still pins 3.114.17 in package.json; deploy with
+  `npx -y wrangler@4 deploy` (does not touch the repo pin) until the pin is
+  deliberately upgraded.
+- **Workers Paid plan required.** Deploying a Worker with an Artifacts binding
+  on a Free-plan account fails at script upload with API error 10403:
+  "In order to use Artifacts, you must switch to a paid plan". Activate at
+  dash.cloudflare.com → Workers → Plans ($5/mo) before deploying.
+- **Secrets vs vars:** `GATE_HMAC_SECRET` must be set via
+  `wrangler secret put GATE_HMAC_SECRET` and must NOT appear in wrangler.jsonc
+  `vars` — wrangler replaces the remote secret with the plain `vars` value on
+  every deploy. Keep only `ENVIRONMENT` / `DEFAULT_BASELINE_REPO` in `vars`.
+- **KV namespace** `TRIBUTARY_KV` id `8221143a7e76470a897ce32612a52acd`
+  (created 2026-10-10) is committed in wrangler.jsonc — required for deploy.
+- **Deployed resources (2026-10-10 attempt):** Worker name `tributary`
+  (placeholder shell exists; real deploy pending paid plan),
+  `tributary.<account>.workers.dev` URL reserved. Radar UI assets (3 files,
+  150KB JS) uploaded successfully on the failed attempt — they persist and
+  will attach on the next successful deploy.
+
+## 4. Real fork-latency measurements
+
+Pending — blocked on Workers Paid plan (see §3). The Act 5 demo segment
+currently uses an explicitly-labeled projection from the Phase 0 spike notes;
+replace with measured `repo.fork()` medians (n=5) once deployed.
+
+---
+
+---
+
