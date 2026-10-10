@@ -461,8 +461,12 @@ app.post('/v1/proposals/:id/merge', async (c) => {
   const accountId = c.env.ARTIFACTS_ACCOUNT_ID;
   const remoteFor = (repo: string) =>
     `https://${accountId}.artifacts.cloudflare.net/git/tributary/${repo}.git`;
+  // baseRepo is an RPC handle: `.remote` may be a lazy JsRpcProperty (truthy
+  // but stringifies to "[object JsRpcProperty]"), so await it and validate.
+  const handleRemote = await (baseRepo as unknown as { remote?: unknown }).remote;
   const baselineRemote =
-    (baseRepo as unknown as { remote?: string }).remote ?? remoteFor(proposal.baselineRepo);
+    (typeof handleRemote === 'string' ? handleRemote : undefined) ??
+    remoteFor(proposal.baselineRepo);
   const forkRemote =
     proposal.forkRemote ?? remoteFor(proposal.forkRepo);
   const tokenSecret = (t: string) => t.split('?')[0];
@@ -651,7 +655,11 @@ app.post('/v1/admin/seed', async (c) => {
     }
   }
 
-  const remote: string | null = repo.remote ?? null;
+  // repo may be an RPC handle: `.remote` can be a lazy JsRpcProperty (truthy
+  // but stringifies to "[object JsRpcProperty]") — await and validate.
+  const seedRemote: unknown = await (repo as { remote?: unknown }).remote;
+  const remote: string | null =
+    typeof seedRemote === 'string' ? seedRemote : null;
   const tokenResult: any = await repo.createToken('write', 600);
   const token: string = tokenResult.plaintext ?? tokenResult.token;
 
