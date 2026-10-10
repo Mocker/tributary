@@ -67,9 +67,19 @@ Object returned from `create`, `get`, `import`, or `fork`:
 
 ## 4. Real fork-latency measurements
 
-Pending — blocked on Workers Paid plan (see §3). The Act 5 demo segment
-currently uses an explicitly-labeled projection from the Phase 0 spike notes;
-replace with measured `repo.fork()` medians (n=5) once deployed.
+Measured 2026-10-10 against the live binding (Worker `tributary`, paid plan
+active). Method: 5× `POST /v1/proposals { baseline: "demo-shop" }` timed
+end-to-end — this covers `repo.fork()` + `createToken('write')` + DO init,
+so it is an upper bound on pure fork latency, not the fork RPC alone:
+
+- min 2.73s, **median 3.08s**, max 4.05s (n=5)
+- Forks are real git repos: `git ls-remote` on a fork remote with the minted
+  `art_v2_*` Bearer <redacted> returns HEAD = the seeded baseline SHA
+  (`5483b1a6…`), `refs/heads/main` present.
+
+Act 5 implication: at ~3s per fork, 50 serial forks ≈ 2.5 min — the demo's
+scale segment should fork in parallel (or pre-record); the "addressing
+problem, not a storage problem" line holds, with measured numbers behind it.
 
 ---
 
