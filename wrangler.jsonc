@@ -20,6 +20,10 @@
       {
         "name": "CHANGE_PROPOSAL_DO",
         "class_name": "ChangeProposalDO"
+      },
+      {
+        "name": "COORDINATOR_DO",
+        "class_name": "CoordinatorDO"
       }
     ]
   },
@@ -28,6 +32,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["ChangeProposalDO"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["CoordinatorDO"]
     }
   ],
 
