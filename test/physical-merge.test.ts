@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import git from 'isomorphic-git';
+import { MemoryFS } from '../src/memory-fs';
 import {
   applyMerge,
   MergeConflictError,
@@ -116,4 +117,36 @@ test('physical-merge: no-op when already merged', async () => {
   });
   assert.equal(res.fastForward, true);
   assert.equal(res.mergedSha, head);
+});
+
+test('physical-merge: works against MemoryFS (the Worker fs)', async () => {
+  // Exercises the exact filesystem the Worker uses, including rm/readlink
+  // handling that isomorphic-git requires.
+  const fs = new MemoryFS();
+  const dir = '/repo';
+  await git.init({ fs, dir, defaultBranch: 'main' });
+  const base = await (async () => {
+    await fs.promises.writeFile(`${dir}/a.txt`, 'a');
+    await git.add({ fs, dir, filepath: 'a.txt' });
+    return git.commit({
+      fs, dir, message: 'base',
+      author: { ...author, timestamp: 1700000000, timezoneOffset: 0 },
+    });
+  })();
+  const forkHead = await (async () => {
+    await fs.promises.writeFile(`${dir}/b.txt`, 'b');
+    await git.add({ fs, dir, filepath: 'b.txt' });
+    return git.commit({
+      fs, dir, message: 'fork work',
+      author: { ...author, timestamp: 1700000001, timezoneOffset: 0 },
+    });
+  })();
+  await git.branch({ fs, dir, ref: 'fork/main', object: forkHead, checkout: false });
+  await git.branch({ fs, dir, ref: 'main', object: base, force: true, checkout: false });
+
+  const res = await applyMerge({
+    fs, dir, baselineBranch: 'main', forkRef: 'fork/main', author, committer,
+  });
+  assert.equal(res.fastForward, true);
+  assert.equal(res.mergedSha, forkHead);
 });
