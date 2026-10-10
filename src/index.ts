@@ -31,43 +31,107 @@ const proposalsRegistry: Map<string, ChangeProposal> = new Map();
 const interventionsRegistry: Map<string, InterventionCard> = new Map();
 const learningsRegistry: Map<string, LearningRule> = new Map();
 
-// Helper to get or stub Artifacts repo
-async function getOrInitArtifacts(env: Env, baseline: string) {
-  try {
-    const existing = await env.ARTIFACTS.get(baseline);
-    if (existing) return existing;
-    const { repo } = await env.ARTIFACTS.create(baseline);
-    return repo;
-  } catch {
-    // Return mock repo handle for local testing when Cloudflare token is pending
-    return {
-      async createToken(scope: any, ttl: number = 3600) {
-        return {
-          token: `art_v1_mock_${ulid()}?expires=${Math.floor(Date.now() / 1000) + ttl}`,
-          plaintext: `art_v1_mock_${ulid()}?expires=${Math.floor(Date.now() / 1000) + ttl}`,
-          expiresAt: Date.now() + ttl * 1000,
-        };
-      },
-      async listTokens() { return []; },
-      async revokeToken() {},
-      async fork(name: string) {
-        return {
-          remote: `https://mock.artifacts.cloudflare.net/git/tributary/${name}.git`,
-          token: `art_v1_mock_${ulid()}`,
-          repo: this,
-        };
-      },
-      async getMetadata() {
-        return {
-          name: baseline,
-          namespace: 'tributary',
-          defaultBranch: 'main',
-          commitsCount: 42,
-          headSha: 'c0ffee112233445566778899aabbccddeeff0011',
-        };
-      },
-    };
+// Helper to get or create the Artifacts baseline repo.
+// Verified against the live binding 2026-10-10: get() THROWS NOT_FOUND for
+// a missing repo (never returns null), and create() returns metadata —
+// re-get() the handle afterwards. Any other binding error fails loudly:
+// silently falling back to mock data would fake the competition's hard
+// requirement of real Workers + Artifacts usage.
+async function getOrInitArtifacts(
+  env: Env,
+  baseline: string
+): Promise<ArtifactsRepo> {
+  if (!env.ARTIFACTS) {
+    // Local dev without the binding configured: mock repo handle.
+    return mockArtifactsRepo(baseline) as unknown as ArtifactsRepo;
   }
+  try {
+    return await env.ARTIFACTS.get(baseline);
+  } catch (err) {
+    if (!isArtifactsNotFound(err)) {
+      console.error(
+        '[artifacts] unexpected binding error:',
+        err instanceof Error ? err.message : String(err)
+      );
+      throw err;
+    }
+  }
+  console.log(`[artifacts] baseline '${baseline}' not found, creating it`);
+  await env.ARTIFACTS.create(baseline);
+  return env.ARTIFACTS.get(baseline);
+}
+
+/** Resolve a repo handle for token minting (real binding, or mock in local dev). */
+async function getRepoHandle(env: Env, repoName: string): Promise<ArtifactsRepo> {
+  if (!env.ARTIFACTS)
+    return mockArtifactsRepo(repoName) as unknown as ArtifactsRepo;
+  return env.ARTIFACTS.get(repoName);
+}
+
+/** Head SHA of a repo's default branch, or a stable placeholder for empty repos. */
+async function getHeadSha(repo: {
+  log: (opts?: { limit?: number }) => Promise<Array<{ hash: string }>>;
+}): Promise<string> {
+  const commits = await repo.log({ limit: 1 });
+  return commits[0]?.hash ?? 'c0ffee112233445566778899aabbccddeeff0011';
+}
+
+function isArtifactsNotFound(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  return (
+    (err as { code?: string }).code === 'NOT_FOUND' ||
+    /not found/i.test(err.message)
+  );
+}
+
+// Mock repo handle for local dev without the ARTIFACTS binding. Mirrors the
+// real ArtifactsRepo surface used above (fork/createToken/info/log).
+function mockArtifactsRepo(baseline: string) {
+  const now = new Date().toISOString();
+  const mkToken = (ttl: number) => ({
+    id: `mock_${ulid()}`,
+    plaintext: `art_v1_mock_${ulid()}?expires=${Math.floor(Date.now() / 1000) + ttl}`,
+    scope: 'write' as const,
+    expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+  });
+  return {
+    async createToken(scope: 'write' | 'read' = 'write', ttl: number = 3600) {
+      return mkToken(ttl);
+    },
+    async listTokens() {
+      return { tokens: [], total: 0 };
+    },
+    async revokeToken() {
+      return true;
+    },
+    async fork(name: string) {
+      return {
+        id: `mock_${name}`,
+        name,
+        description: null,
+        defaultBranch: 'main',
+        remote: `https://mock.artifacts.cloudflare.net/git/tributary/${name}.git`,
+        token: mkToken(3600).plaintext,
+      };
+    },
+    async info() {
+      return {
+        id: `mock_${baseline}`,
+        name: baseline,
+        description: null,
+        defaultBranch: 'main',
+        createdAt: now,
+        updatedAt: now,
+        lastPushAt: null,
+        source: null,
+        readOnly: false,
+        remote: `https://mock.artifacts.cloudflare.net/git/tributary/${baseline}.git`,
+      };
+    },
+    async log() {
+      return [];
+    },
+  };
 }
 
 // -------------------------------------------------------------
@@ -105,9 +169,10 @@ app.post('/v1/proposals', async (c) => {
 
   // Fork baseline repo via Artifacts binding
   const baseRepo = await getOrInitArtifacts(c.env, baseline);
-  const forkResult = await baseRepo.fork(forkRepo);
-  const tokenResult = await forkResult.repo.createToken('write', 3600);
-  const meta = await baseRepo.getMetadata();
+  const forked = await baseRepo.fork(forkRepo);
+  const forkHandle = await getRepoHandle(c.env, forkRepo);
+  const tokenResult = await forkHandle.createToken('write', 3600);
+  const baselineParentSha = await getHeadSha(baseRepo);
 
   // Initialize ChangeProposal Durable Object
   const doId = c.env.CHANGE_PROPOSAL_DO.idFromName(proposalId);
@@ -123,7 +188,7 @@ app.post('/v1/proposals', async (c) => {
         forkRepo,
         agentId,
         taskRef,
-        baselineParentSha: meta.headSha || 'c0ffee112233445566778899aabbccddeeff0011',
+        baselineParentSha,
       }),
     })
   );
@@ -135,7 +200,7 @@ app.post('/v1/proposals', async (c) => {
     proposalId,
     baselineRepo: baseline,
     forkRepo,
-    forkRemote: forkResult.remote,
+    forkRemote: forked.remote,
     token: tokenResult.plaintext,
     tokenExpiresAt: tokenResult.expiresAt,
     proposal: proposalState,
@@ -335,8 +400,7 @@ app.post('/v1/proposals/:id/merge', async (c) => {
 
   // Fetch current mainline SHA to evaluate CAS
   const baseRepo = await getOrInitArtifacts(c.env, proposal.baselineRepo);
-  const meta = await baseRepo.getMetadata();
-  const currentMainlineSha = meta.headSha || 'c0ffee112233445566778899aabbccddeeff0011';
+  const currentMainlineSha = await getHeadSha(baseRepo);
 
   // Evaluate all merge conditions
   const evalResult = evaluateMergeGate(proposal, commitSha, currentMainlineSha, ['test']);
