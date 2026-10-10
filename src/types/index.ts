@@ -2,6 +2,7 @@ export interface ChangeProposal {
   id: string; // ulid
   baselineRepo: string; // Artifacts repo name, e.g. "demo-shop"
   forkRepo: string; // forked repo name, e.g. "demo-shop__p_01J..."
+  forkRemote?: string; // git remote URL of the fork (set at proposal creation)
   agentId: string;
   taskRef: string;
   status:
