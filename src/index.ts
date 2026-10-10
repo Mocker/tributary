@@ -465,6 +465,65 @@ app.post('/v1/interventions/:id/resolve', async (c) => {
   return c.json({ success: true, intervention: card });
 });
 
+// 15. POST /v1/admin/seed — Ensure the baseline repo exists in Artifacts and
+// mint a short-lived write token for pushing the seed content.
+//
+// The Worker creates the repo via the Artifacts binding (no REST path guessing),
+// but the actual file push happens OUTSIDE the Worker: scripts/seed-baseline.ts
+// takes the returned { remote, token } and pushes the local folder over git
+// smart-HTTP with a Bearer header. Honest by design — no mocks on this route:
+// if Artifacts is unreachable it 503s instead of fabricating a repo.
+app.post('/v1/admin/seed', async (c) => {
+  let body: { baseline?: string } = {};
+  try { body = await c.req.json(); } catch { /* default baseline */ }
+  const baseline = body.baseline || 'demo-shop';
+
+  let repo: any = null;
+  let remote: string | undefined;
+  let created = false;
+
+  try {
+    const existing: any = await c.env.ARTIFACTS.get(baseline);
+    if (existing) {
+      repo = existing;
+      remote = existing.remote;
+    }
+  } catch {
+    // get() is nullish on missing; a throw means the binding itself failed
+    return c.json({ error: 'Artifacts binding error on get()', code: 'artifacts_error' }, 503);
+  }
+
+  if (!repo) {
+    try {
+      const res: any = await c.env.ARTIFACTS.create(baseline);
+      repo = res.repo ?? res;
+      remote = res.remote ?? res.repo?.remote;
+      created = true;
+    } catch {
+      return c.json({
+        error: 'Artifacts unavailable — is the Workers Paid plan active on this account?',
+        code: 'artifacts_unavailable',
+      }, 503);
+    }
+  }
+
+  if (!remote) {
+    return c.json({ error: 'Could not determine repo remote from Artifacts response', code: 'no_remote' }, 500);
+  }
+
+  const tokenResult: any = await repo.createToken('write', 600);
+  const token = tokenResult.plaintext ?? tokenResult.token;
+
+  return c.json({
+    baseline,
+    created,
+    remote,
+    token,
+    tokenExpiresAt: tokenResult.expiresAt,
+    usage: 'git -c http.extraHeader="Authorization: Bearer <token>" push <remote> HEAD:main',
+  }, created ? 201 : 200);
+});
+
 // 14. POST /v1/admin/simulate — Trigger in-browser swarm collision demo
 app.post('/v1/admin/simulate', async (c) => {
   // Step 1: Agent A claims auth
