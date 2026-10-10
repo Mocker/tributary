@@ -7,6 +7,7 @@ import git from 'isomorphic-git';
 import { MemoryFS } from '../src/memory-fs';
 import {
   applyMerge,
+  applyExtraCommits,
   MergeConflictError,
 } from '../src/core/physical-merge';
 
@@ -149,4 +150,43 @@ test('physical-merge: works against MemoryFS (the Worker fs)', async () => {
   });
   assert.equal(res.fastForward, true);
   assert.equal(res.mergedSha, forkHead);
+});
+
+test('physical-merge: applyExtraCommits writes files and commits on top', async () => {
+  const dir = await mkRepo();
+  const base = await commitFile(dir, 'a.txt', 'a', 'base');
+  const forkHead = await commitFile(dir, 'b.txt', 'b', 'fork work');
+  await git.branch({ fs, dir, ref: 'fork/main', object: forkHead, checkout: false });
+  await git.branch({ fs, dir, ref: 'main', object: base, force: true, checkout: false });
+
+  const merged = await applyMerge({
+    fs, dir, baselineBranch: 'main', forkRef: 'fork/main', author, committer,
+  });
+  assert.equal(merged.fastForward, true);
+
+  const shas = await applyExtraCommits(fs, dir, [
+    {
+      files: { 'learnings/2026-10-10-test-rule.md': '# Test Rule\n\nA durable rule.\n' },
+      message: 'docs: crystallize learning test-rule',
+      author: { name: 'Tributary', email: 'merge@tributary.local' },
+      committer: { name: 'Tributary', email: 'merge@tributary.local' },
+    },
+  ]);
+  assert.equal(shas.length, 1);
+
+  const head = await git.resolveRef({ fs, dir, ref: 'main' });
+  assert.equal(head, shas[0]);
+  assert.notEqual(head, merged.mergedSha);
+
+  // file is versioned, not just on disk
+  const content = await git.readBlob({
+    fs, dir, oid: head, filepath: 'learnings/2026-10-10-test-rule.md',
+  });
+  assert.ok(Buffer.from(content.blob).toString().includes('Test Rule'));
+
+  const commit = await git.readCommit({ fs, dir, oid: head });
+  assert.equal(commit.commit.message.trim(), 'docs: crystallize learning test-rule');
+  assert.equal(commit.commit.author.name, 'Tributary');
+  assert.equal(commit.commit.parent.length, 1);
+  assert.equal(commit.commit.parent[0], merged.mergedSha);
 });

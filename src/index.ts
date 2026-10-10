@@ -499,6 +499,23 @@ app.post('/v1/proposals/:id/merge', async (c) => {
   const forkRepoHandle = await getRepoHandle(c.env, proposal.forkRepo);
   const forkToken = await forkRepoHandle.createToken('read', 600);
 
+  // Crystallize learning if provided: versioned in git (learnings/ dir,
+  // committed in the same push as the merge) AND indexed in the coordinator
+  // for the radar. Author = Tributary: the rule is the system's synthesis.
+  let learningEntry: LearningRule | undefined;
+  if (learning) {
+    const today = new Date().toISOString().slice(0, 10);
+    const slug = learning.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    learningEntry = {
+      date: today,
+      slug,
+      title: learning.title,
+      whatHappened: learning.whatHappened,
+      rule: learning.rule,
+      filePath: generateLearningFilename(today, slug),
+    };
+  }
+
   let physical: PhysicalMergeResult;
   try {
     physical = await physicalMerge({
@@ -516,6 +533,16 @@ app.post('/v1/proposals/:id/merge', async (c) => {
         email: `${proposal.agentId.toLowerCase().replace(/[^a-z0-9]+/g, '-') }@tributary.local`,
       },
       committer: { name: 'Tributary', email: 'merge@tributary.local' },
+      extraCommits: learningEntry
+        ? [
+            {
+              files: { [learningEntry.filePath]: generateLearningMarkdown(learningEntry) },
+              message: `docs: crystallize learning ${learningEntry.slug}`,
+              author: { name: 'Tributary', email: 'merge@tributary.local' },
+              committer: { name: 'Tributary', email: 'merge@tributary.local' },
+            },
+          ]
+        : [],
     });
   } catch (e) {
     if (e instanceof MergeConflictError) {
@@ -545,19 +572,9 @@ app.post('/v1/proposals/:id/merge', async (c) => {
   await coordPost(c.env, '/claims/release-by-proposal', { proposalId });
   await coordPatch(c.env, `/proposals/${proposalId}`, { status: 'merged' });
 
-  // Crystallize learning if provided
-  let learningEntry: LearningRule | undefined;
-  if (learning) {
-    const today = new Date().toISOString().slice(0, 10);
-    const slug = learning.title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    learningEntry = {
-      date: today,
-      slug,
-      title: learning.title,
-      whatHappened: learning.whatHappened,
-      rule: learning.rule,
-      filePath: generateLearningFilename(today, slug),
-    };
+  // Index the crystallized learning for the radar (the file itself was
+  // committed to the baseline repo in the merge push above)
+  if (learningEntry) {
     await coordPost(c.env, '/learnings', { rule: learningEntry });
   }
 
