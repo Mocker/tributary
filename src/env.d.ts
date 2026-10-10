@@ -8,6 +8,7 @@
 export interface Env {
   ARTIFACTS: Artifacts;
   CHANGE_PROPOSAL_DO: DurableObjectNamespace;
+  COORDINATOR_DO: DurableObjectNamespace;
   TRIBUTARY_KV: KVNamespace;
 
   ENVIRONMENT?: string;
