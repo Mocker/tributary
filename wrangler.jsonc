@@ -27,7 +27,7 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_classes": ["ChangeProposalDO"]
+      "new_sqlite_classes": ["ChangeProposalDO"]
     }
   ],
 
