@@ -655,7 +655,11 @@ app.post('/v1/admin/seed', async (c) => {
     }
   }
 
-  const remote: string | null = repo.remote ?? null;
+  // repo may be an RPC handle: `.remote` can be a lazy JsRpcProperty (truthy
+  // but stringifies to "[object JsRpcProperty]") — await and validate.
+  const seedRemote: unknown = await (repo as { remote?: unknown }).remote;
+  const remote: string | null =
+    typeof seedRemote === 'string' ? seedRemote : null;
   const tokenResult: any = await repo.createToken('write', 600);
   const token: string = tokenResult.plaintext ?? tokenResult.token;
 
