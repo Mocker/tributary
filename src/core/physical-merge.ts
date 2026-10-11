@@ -51,6 +51,14 @@ export class MainlineMovedError extends Error {
   }
 }
 
+export interface ExtraCommit {
+  /** Repo-relative path -> file content. */
+  files: Record<string, string>;
+  message: string;
+  author: GitIdentity;
+  committer: GitIdentity;
+}
+
 /**
  * Decide and apply the merge once both heads are present locally.
  * Fast-forward when the fork is a descendant; otherwise a real merge commit
@@ -108,6 +116,38 @@ export async function applyMerge(
   }
 }
 
+/**
+ * Write extra files and commit them on top of the current HEAD.
+ * Used for Tributary-synthesized commits that ride the same push as the
+ * merge (e.g. crystallized learnings). Exported for testing.
+ */
+export async function applyExtraCommits(
+  fs: any,
+  dir: string,
+  commits: ExtraCommit[]
+): Promise<string[]> {
+  const shas: string[] = [];
+  for (const ec of commits) {
+    for (const [p, content] of Object.entries(ec.files)) {
+      // mkdir -p: node:fs does not create parents on writeFile (MemoryFS does),
+      // and this must work on both.
+      const parent = p.split('/').slice(0, -1).join('/');
+      if (parent) await fs.promises.mkdir(`${dir}/${parent}`, { recursive: true });
+      await fs.promises.writeFile(`${dir}/${p}`, content);
+      await git.add({ fs, dir, filepath: p });
+    }
+    const sha = await git.commit({
+      fs,
+      dir,
+      message: ec.message,
+      author: ec.author,
+      committer: ec.committer,
+    });
+    shas.push(sha);
+  }
+  return shas;
+}
+
 export interface PhysicalMergeInput extends Omit<ApplyMergeInput, 'forkRef'> {
   http: any;
   baselineRemote: string;
@@ -115,6 +155,8 @@ export interface PhysicalMergeInput extends Omit<ApplyMergeInput, 'forkRef'> {
   forkBranch?: string;
   baselineAuth: GitAuth;
   forkAuth: GitAuth;
+  /** Optional Tributary-synthesized commits applied on top of the merge. */
+  extraCommits?: ExtraCommit[];
 }
 
 export interface PhysicalMergeResult extends ApplyMergeResult {
@@ -166,6 +208,10 @@ export async function physicalMerge(
     committer: input.committer,
   });
 
+  // Tributary-synthesized commits (e.g. learnings) ride the same push.
+  await applyExtraCommits(fs, dir, input.extraCommits ?? []);
+  const pushedSha = await git.resolveRef({ fs, dir, ref: baselineBranch });
+
   try {
     await git.push({
       fs,
@@ -185,5 +231,5 @@ export async function physicalMerge(
     throw e;
   }
 
-  return { ...applied, baselineHeadBefore };
+  return { ...applied, mergedSha: pushedSha, baselineHeadBefore };
 }

@@ -24,11 +24,15 @@ ${rule.whatHappened}
 
 /**
  * Creates a normalized filename for a learning entry: YYYY-MM-DD-<slug>.md
+ *
+ * Stored versioned at the repo top level (`learnings/`), not `.git/learnings/`:
+ * `.git/` is never versioned by git, so files there would not survive a clone.
+ * The epistemic memory must be cloneable to be real.
  */
 export function generateLearningFilename(date: string, slug: string): string {
   const cleanSlug = slug
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-|-$/g, '');
-  return `.git/learnings/${date}-${cleanSlug}.md`;
+  return `learnings/${date}-${cleanSlug}.md`;
 }
