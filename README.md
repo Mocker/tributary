@@ -18,37 +18,38 @@ Git’s collaboration primitives — branches, textual 3-way merges, human pull 
 
 ---
 
-## 🚀 The Three Pillars of Tributary
+## 🚀 The Pillars of Tributary
 
 ```
 agents (any client: scripts, MCP clients, IDE agents)
    │  HTTPS + git smart-HTTP
    ▼
 ┌─ Tributary Worker (Hono API) ─────────────────────────┐
-│  POST /v1/proposals → fork baseline via Artifacts      │
+│  POST /v1/admin/keys → mint per-agent API key         │
+│  POST /v1/proposals → fork baseline via Artifacts     │
 │  POST /v1/proposals/:id/claims → overlap check        │
 │  POST /v1/proposals/:id/gates/:g/run → attestation    │
-│  POST /v1/proposals/:id/merge → gated merge           │
+│  POST /v1/proposals/:id/merge → real git merge        │
 │  GET  /v1/proposals/:id/events (SSE context bus)      │
 │  GET  /v1/learnings · POST /v1/interventions/:id/...  │
 └──────────┬───────────────────────────────┬────────────┘
            │                               │
    ┌───────▼────────┐            ┌─────────▼──────────┐
-   │ ChangeProposal │            │ Cloudflare         │
-   │ Durable Object │            │ Artifacts          │
-   │ (one per       │            │ (repos, forks,     │
-   │  proposal:     │            │  git smart-HTTP,   │
-   │  claims, gates,│            │  scoped tokens)    │
-   │  merge state)  │            └────────────────────┘
+   │ CoordinatorDO  │            │ Cloudflare         │
+   │ (global claim  │            │ Artifacts          │
+   │  index, single │            │ (repos, forks,     │
+   │  writer) +     │            │  git smart-HTTP,   │
+   │ ChangeProposal │            │  scoped tokens)    │
+   │ DO per proposal│            └────────────────────┘
    └────────────────┘
 ```
 
 1. **Prevent conflicts before compute is spent**:  
    Claim-based intent declaration with semantic overlap detection (paths + symbol mapping via `tributary.symbols.json`). Overlaps are rejected at claim time with actionable 1-sentence explanations.
 2. **Verify by attestation, not human review**:  
-   Verification gates execute deterministic test invariants and emit cryptographically signed HMAC attestations. Merges are gated on passing attestations.
+   Verification gates execute deterministic test invariants and emit cryptographically signed HMAC attestations. Merges are gated on passing attestations — and the merge itself is a real git merge executed in the Worker (isomorphic-git): fast-forward when clean, a true merge commit otherwise, pushed with CAS protection.
 3. **Make every resolution compound**:  
-   Instructive failures and resolved conflicts crystallize into durable markdown rules in `.git/learnings/` (epistemic memory) stored directly inside the repository.
+   Instructive failures and resolved conflicts crystallize into durable markdown rules in `learnings/` (epistemic memory) — versioned files committed in the same push as the merge, so they survive every clone.
 4. **Compare-And-Swap (CAS) Protection**:  
    Guards against race conditions on mainline. If the target ref moved while an agent was running gates, merge returns `409 { code: "ref_moved" }` prompting a clean rebase and re-attestation.
 
@@ -79,13 +80,20 @@ tributary/
 │   │   ├── overlap.ts              # Path & symbol overlap detection engine
 │   │   ├── attestation.ts          # HMAC-SHA256 signature generator & validator
 │   │   ├── merge-gate.ts           # Gated merge logic with CAS validation
+│   │   ├── physical-merge.ts       # Real git merge in-Worker (isomorphic-git)
+│   │   ├── api-keys.ts             # Per-agent API key issuance & verification
 │   │   └── learnings.ts            # Epistemic memory note generator
+│   ├── memory-fs.ts                # In-memory FS for isomorphic-git in Workers
 │   └── do/
-│       └── change-proposal.ts      # ChangeProposal Durable Object (single-writer state)
+│       ├── coordinator.ts          # CoordinatorDO: global atomic claim index
+│       └── change-proposal.ts      # ChangeProposal Durable Object (per-proposal state)
 ├── test/
 │   ├── overlap.test.ts             # Overlap detection tests
 │   ├── attestation.test.ts         # Cryptographic signing tests
-│   └── merge-gate.test.ts          # Merge gating and CAS tests
+│   ├── merge-gate.test.ts          # Merge gating and CAS tests
+│   ├── physical-merge.test.ts      # Real merge scenarios against local git
+│   ├── api-keys.test.ts            # API key generation & hashing
+│   └── coordinator.test.ts         # Global claim index tests
 ├── scripts/
 │   └── run-demo-script.ts          # Rehearses the complete 6-act competition video demo
 ├── wrangler.jsonc                  # Cloudflare Workers + Artifacts configuration
@@ -107,9 +115,10 @@ Node 24+, npm. No Docker, no Devbox, no Cloudflare account needed for the local 
 
 ```bash
 npm install
-npm test         # 23 tests: overlap detection, HMAC attestations, CAS merge gate,
+npm test         # 32 tests: overlap detection, HMAC attestations, CAS merge gate,
                  # Z3 machine-checked invariants, CoordinatorDO (incl. the
-                 # cross-isolate 409 regression test)
+                 # cross-isolate 409 regression test), physical merge,
+                 # API keys
 npm run typecheck
 ```
 
@@ -119,18 +128,24 @@ npm run typecheck
 npm run dev      # Worker + radar UI at http://localhost:8787
 ```
 
-Drive the API directly:
+Drive the API directly (mutating routes need a Bearer API key):
 
 ```bash
-# Mint a proposal (real Artifacts fork when deployed with the binding)
-curl -X POST localhost:8787/v1/proposals \
+# Mint an API key for your agent (shown once; only the hash is stored)
+KEY=$(curl -s -X POST localhost:8787/v1/admin/keys \
   -H 'Content-Type: application/json' \
-  -d '{"baseline":"demo-shop","taskRef":"AUTH-101","agentId":"agent-a"}'
+  -d '{"agentId":"agent-a"}' | python3 -c "import json,sys; print(json.load(sys.stdin)['apiKey'])")
+
+# Mint a proposal (real Artifacts fork when deployed with the binding).
+# agentId comes from the key — clients can't self-assert identity.
+curl -X POST localhost:8787/v1/proposals \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"baseline":"demo-shop","taskRef":"AUTH-101"}'
 
 # Claim before you work — overlapping claims get HTTP 409 here,
 # not a merge conflict three hours later
 curl -X POST localhost:8787/v1/proposals/<id>/claims \
-  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
   -d '{"paths":["src/auth/**"],"symbols":["createSession"],"rationale":"auth upgrade"}'
 
 # Scripted 6-act scenario through the real coordinator paths:
@@ -159,7 +174,7 @@ npx wrangler deploy   # requires a Workers Paid plan (Artifacts requirement)
 1. **Act 1 (Problem):** Two agents edit `src/session.ts` concurrently; standard Git discovers the conflict only at merge time.
 2. **Act 2 (Prevention):** Agent A claims `src/auth/**` + `createSession`. Agent B claims `src/session.ts` → instant **HTTP 409**: *"conflicts with Agent A's claim on src/session.ts (symbol createSession)"*. The CoordinatorDO (single-writer Durable Object) makes this atomic across all Workers isolates — verified live. Zero compute wasted.
 3. **Act 3 (Verification):** Agent B narrows its claim, runs gate `test`, and records an HMAC-signed attestation on the exact commit SHA.
-4. **Act 4 (Memory):** The session-boundary invariant crystallizes into `.git/learnings/` via the API.
+4. **Act 4 (Memory):** The session-boundary invariant crystallizes into `learnings/` as a versioned file in the merge push itself.
 5. **Act 5 (Scale):** Fork-per-proposal in Artifacts — median **3.08s** end-to-end per fork (measured live, n=5). Parallelize the scale shot; 50 serial forks ≈ 2.5 min.
 6. **Act 6 (Close):** *"GitHub coordinates humans. Tributary coordinates agents."*
 
