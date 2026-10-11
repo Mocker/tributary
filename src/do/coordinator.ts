@@ -126,6 +126,20 @@ export class CoordinatorDO {
         return json({ success: true, released });
       }
 
+      if (path === '/claims/release-by-agent' && method === 'POST') {
+        const { agentId } = await request.json<{ agentId: string }>();
+        const all = await this.load<Claim>('claims');
+        let released = 0;
+        for (const [id, c] of Object.entries(all)) {
+          if (c.agentId === agentId) {
+            delete all[id];
+            released++;
+          }
+        }
+        await this.save('claims', all);
+        return json({ success: true, released });
+      }
+
       if (path === '/claims' && method === 'GET') {
         const all = await this.load<Claim>('claims');
         return json({ claims: this.liveClaims(all) });

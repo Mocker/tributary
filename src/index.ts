@@ -777,6 +777,11 @@ app.post('/v1/admin/simulate', async (c) => {
 
   const propA = mkProposal(`prop_auth_${ulid().slice(-6)}`, 'Agent A (Auth)', 'AUTH-101');
   const propB = mkProposal(`prop_billing_${ulid().slice(-6)}`, 'Agent B (Billing)', 'BILL-402');
+
+  // Reset previous simulated claims so repeated simulation runs are 100% idempotent
+  await coordPost(c.env, '/claims/release-by-agent', { agentId: 'Agent A (Auth)' });
+  await coordPost(c.env, '/claims/release-by-agent', { agentId: 'Agent B (Billing)' });
+
   await coordPost(c.env, '/proposals', { proposal: propA });
   await coordPost(c.env, '/proposals', { proposal: propB });
 
