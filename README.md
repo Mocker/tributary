@@ -3,6 +3,8 @@
 > **"GitHub coordinates humans. Tributary coordinates agents."**  
 > *Target Competition:* Cloudflare Challenge **"Build the next GitHub"**  
 > *Submission Deadline:* **October 14, 2026, 11:59 PM PDT**  
+> *Live Edge Deployment:* **[https://tributary.sokercap.workers.dev](https://tributary.sokercap.workers.dev)** (Workers + Artifacts + Durable Objects)  
+> *Demo Video:* **[🎬 6-Minute Walkthrough Video](https://youtu.be/placeholder-tributary-demo)** *(Competition Submission)*  
 > *License:* **MIT** (see [LICENSE](LICENSE))
 
 ---
@@ -61,8 +63,10 @@ agents (any client: scripts, MCP clients, IDE agents)
 tributary/
 ├── docs/
 │   ├── BUILD_PLAN.md               # Complete competition handoff and build plan
+│   ├── CLOUDFLARE_CHALLENGE_REVIEW.md # Competition review & judging rubric alignment
 │   ├── decisions.md                # Architectural decisions log (1 line per decision)
 │   ├── artifacts-notes.md          # Cloudflare Artifacts capabilities and verified behavior
+│   ├── repos.md                    # Namespace and baseline/fork lifecycle design
 │   └── spikes/
 │       └── phase0-spikes.md        # Fork latency and gate execution spike notes
 ├── demo-shop/                      # Demo victim repo (e-commerce API)
@@ -87,16 +91,24 @@ tributary/
 │   └── do/
 │       ├── coordinator.ts          # CoordinatorDO: global atomic claim index
 │       └── change-proposal.ts      # ChangeProposal Durable Object (per-proposal state)
+├── ui/                             # Radar Console: React 18 + Vite live ops dashboard
+│   ├── src/
+│   │   ├── App.tsx                 # Live claims, queue, attestations & Judge Tour
+│   │   ├── api.ts                  # REST + SSE real-time connection client
+│   │   └── index.css               # Ops-console theme (Workers Assets served)
+│   └── vite.config.ts              # Static build config (output to ui/dist)
 ├── test/
 │   ├── overlap.test.ts             # Overlap detection tests
 │   ├── attestation.test.ts         # Cryptographic signing tests
 │   ├── merge-gate.test.ts          # Merge gating and CAS tests
+│   ├── merge-invariants.test.ts    # Z3 solver machine-checked invariants
 │   ├── physical-merge.test.ts      # Real merge scenarios against local git
 │   ├── api-keys.test.ts            # API key generation & hashing
 │   └── coordinator.test.ts         # Global claim index tests
 ├── scripts/
-│   └── run-demo-script.ts          # Rehearses the complete 6-act competition video demo
-├── wrangler.jsonc                  # Cloudflare Workers + Artifacts configuration
+│   ├── run-demo-script.ts          # Rehearses the complete 6-act competition video demo
+│   └── seed-baseline.ts            # Seeds baseline repos into Artifacts via git smart-HTTP
+├── wrangler.jsonc                  # Cloudflare Workers + Artifacts + DO + Assets config
 ├── LICENSE                         # MIT License
 └── package.json
 ```
@@ -105,7 +117,8 @@ tributary/
 
 ## 📦 Run Instructions (For Judges & Developers)
 
-**Live deployment:** https://tributary.sokercap.workers.dev — radar UI + full `/v1` API on Workers + Artifacts + Durable Objects.
+**Live deployment:** https://tributary.sokercap.workers.dev — radar UI + full `/v1` API on Workers + Artifacts + Durable Objects.  
+*Tip for judges:* Click **"📖 Judge API Tour"** directly in the Radar UI header for interactive, 1-click copyable `curl` commands against the live edge deployment.
 
 ### Prerequisites
 
@@ -166,6 +179,28 @@ npm run seed -- --worker https://tributary.sokercap.workers.dev
 ```bash
 npx wrangler deploy   # requires a Workers Paid plan (Artifacts requirement)
 ```
+
+---
+
+## 🤖 Agent Ecosystem Integration (How External Agents Plug In)
+
+Tributary is client-agnostic. Any coding agent (Claude Code, Cursor, Pi, Aider, Devin, or custom agent swarms) coordinates through Tributary using standard git smart-HTTP and REST:
+
+1. **Authentication:** The agent or harness receives a task key (`trib_...`) minted via `POST /v1/admin/keys`.
+2. **Workspace Provisioning:** The agent requests a workspace via `POST /v1/proposals { baseline, taskRef }`. Tributary forks the baseline in Cloudflare Artifacts (`demo-shop__p_<ulid>`) and mints a 1-hour scoped git write token.
+3. **Claim Intent (Collision Check):** Before modifying files, the agent declares intent:
+   `POST /v1/proposals/:id/claims { paths, symbols, rationale }`.
+   If another agent holds a conflicting lease, Tributary returns **HTTP 409** immediately — preventing wasted LLM drafting compute.
+4. **Git Clone & Work:** The agent interacts with Artifacts using standard Git:
+   ```bash
+   git -c http.extraHeader="Authorization: Bearer <scoped_token>" clone <fork_remote>
+   # agent drafts code, runs local unit tests, and commits
+   git -c http.extraHeader="Authorization: Bearer <scoped_token>" push origin HEAD:main
+   ```
+5. **Gated Verification:** The agent triggers verification:
+   `POST /v1/proposals/:id/gates/test/run { commitSha }`.
+   The gate runs deterministic invariants and returns an HMAC-signed attestation.
+6. **In-Worker Physical Merge:** The agent merges via `POST /v1/proposals/:id/merge`. The Worker evaluates the CAS guard, executes the merge commit in memory via `isomorphic-git`, commits any synthesized failure rules to `learnings/`, and pushes directly to the Artifacts baseline.
 
 ---
 

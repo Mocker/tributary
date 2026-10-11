@@ -136,6 +136,24 @@ test('coordinator: supersede + release-by-proposal', async () => {
   assert.equal(list.body.claims.length, 0);
 });
 
+test('coordinator: release-by-agent clears all claims for an agent', async () => {
+  const do_ = makeDO();
+  const c1 = mkClaim({ id: 'c1', agentId: 'Agent A', paths: ['src/a/**'], symbols: [] });
+  const c2 = mkClaim({ id: 'c2', agentId: 'Agent A', paths: ['src/b/**'], symbols: [] });
+  const c3 = mkClaim({ id: 'c3', agentId: 'Agent B', paths: ['src/c/**'], symbols: [] });
+  await post(do_, '/claims/declare', { claim: c1, symbolIndex });
+  await post(do_, '/claims/declare', { claim: c2, symbolIndex });
+  await post(do_, '/claims/declare', { claim: c3, symbolIndex });
+
+  const rel = await post(do_, '/claims/release-by-agent', { agentId: 'Agent A' });
+  assert.equal(rel.status, 200);
+  assert.equal(rel.body.released, 2);
+
+  const list = await get(do_, '/claims');
+  assert.equal(list.body.claims.length, 1);
+  assert.equal(list.body.claims[0].agentId, 'Agent B');
+});
+
 test('coordinator: interventions create / list / resolve', async () => {
   const do_ = makeDO();
   const card: InterventionCard = {

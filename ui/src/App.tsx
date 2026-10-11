@@ -188,6 +188,90 @@ function InterventionDrawer({
 }
 
 // ---------------------------------------------------------------------------
+// Judge Tour with Quick curl Snippets
+// ---------------------------------------------------------------------------
+function JudgeTour({ onClose }: { onClose: () => void }) {
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
+
+  const snippets = [
+    {
+      title: '1. Mint Agent API Key',
+      desc: 'Mint an authorized key for an agent. Keys are SHA-256 hashed in Cloudflare KV.',
+      cmd: `curl -s -X POST https://tributary.sokercap.workers.dev/v1/admin/keys \\
+  -H 'Content-Type: application/json' \\
+  -d '{"agentId":"agent-alpha","name":"Alpha Agent"}'`,
+    },
+    {
+      title: '2. Declare Claim (Collision Check)',
+      desc: 'Declare intent on paths and symbols. Overlaps are rejected at claim time with HTTP 409.',
+      cmd: `curl -s -X POST https://tributary.sokercap.workers.dev/v1/proposals/<PROPOSAL_ID>/claims \\
+  -H "Authorization: Bearer <API_KEY>" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"paths":["src/auth/**"],"symbols":["createSession"],"rationale":"Auth upgrade"}'`,
+    },
+    {
+      title: '3. Run Verification Gate',
+      desc: 'Deterministic test gate emits cryptographically signed HMAC attestation on commit SHA.',
+      cmd: `curl -s -X POST https://tributary.sokercap.workers.dev/v1/proposals/<PROPOSAL_ID>/gates/test/run \\
+  -H "Authorization: Bearer <API_KEY>" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"commitSha":"a1b2c3d4e5f67890123456789012345678901234"}'`,
+    },
+    {
+      title: '4. Physical Merge & Memory Invariant',
+      desc: 'Worker runs isomorphic-git in MemoryFS, validates CAS, and commits learnings/ to git.',
+      cmd: `curl -s -X POST https://tributary.sokercap.workers.dev/v1/proposals/<PROPOSAL_ID>/merge \\
+  -H "Authorization: Bearer <API_KEY>" \\
+  -H 'Content-Type: application/json' \\
+  -d '{"commitSha":"a1b2c3d4e5f67890123456789012345678901234","learning":{"title":"Shared Session Boundary","whatHappened":"Collision avoided","rule":"Always claim session.ts explicitly"}}'`,
+    },
+    {
+      title: '5. Run 6-Act Swarm Simulation (1-Tap)',
+      desc: 'Execute complete 6-act swarm collision walkthrough through live CoordinatorDO.',
+      cmd: `curl -s -X POST https://tributary.sokercap.workers.dev/v1/admin/simulate`,
+    },
+  ];
+
+  const copy = (text: string, idx: number) => {
+    navigator.clipboard.writeText(text);
+    setCopiedIdx(idx);
+    setTimeout(() => setCopiedIdx(null), 2000);
+  };
+
+  return (
+    <section className="tour-panel">
+      <div className="tour-head">
+        <div>
+          <span className="tour-badge">JUDGE API QUICK TOUR</span>
+          <h2>Zero-Friction Terminal Walkthrough</h2>
+          <p className="tour-subtitle">
+            Drive Tributary directly from your local terminal against this live Cloudflare Workers + Artifacts deployment.
+          </p>
+        </div>
+        <button className="btn dismiss" onClick={onClose}>✕ Close</button>
+      </div>
+      <div className="tour-grid">
+        {snippets.map((s, idx) => (
+          <div key={idx} className="tour-step">
+            <div className="tour-step-head">
+              <span className="tour-step-title">{s.title}</span>
+              <button
+                className="btn copy-btn"
+                onClick={() => copy(s.cmd, idx)}
+              >
+                {copiedIdx === idx ? '✓ Copied' : '📋 Copy curl'}
+              </button>
+            </div>
+            <p className="tour-step-desc">{s.desc}</p>
+            <pre className="tour-code"><code>{s.cmd}</code></pre>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // App
 // ---------------------------------------------------------------------------
 export default function App() {
@@ -195,6 +279,7 @@ export default function App() {
     useRadar();
   const [simulating, setSimulating] = useState(false);
   const [simError, setSimError] = useState<string | null>(null);
+  const [showTour, setShowTour] = useState(false);
 
   const allAttestations: { a: Attestation; agentId: string }[] = [...proposals]
     .sort((x, y) => y.updatedAt - x.updatedAt)
@@ -239,12 +324,16 @@ export default function App() {
           <div className="substrate">
             Substrate: <b>Artifacts</b> | Runtime: <b>Workers DO</b>
           </div>
+          <button className="btn tour" onClick={() => setShowTour((v) => !v)}>
+            {showTour ? '✕ Hide API Tour' : '📖 Judge API Tour'}
+          </button>
           <button className="btn simulate" onClick={doSimulate} disabled={simulating}>
             {simulating ? '⏳ Simulating…' : '▶️ Run Swarm Simulation'}
           </button>
         </div>
       </header>
       {simError && <div className="error">{simError}</div>}
+      {showTour && <JudgeTour onClose={() => setShowTour(false)} />}
 
       {/* Claim rejection banner — surfaces the one-sentence reason prominently */}
       {lastRejection && (
