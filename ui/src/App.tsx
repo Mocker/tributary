@@ -82,6 +82,41 @@ function LearningCard({ l }: { l: LearningRule }) {
   );
 }
 
+const STATUS_CLASS: Record<string, string> = {
+  claiming: 'st-claiming',
+  working: 'st-working',
+  gating: 'st-gating',
+  merging: 'st-merging',
+  merged: 'st-merged',
+  rejected: 'st-rejected',
+  expired: 'st-expired',
+};
+
+function MergeQueue({ proposals }: { proposals: ChangeProposal[] }) {
+  if (proposals.length === 0) return null;
+  return (
+    <section className="queue">
+      <div className="queue-head">
+        <span>🔀</span>
+        <h2>Merge Queue</h2>
+        <span className="pill">{proposals.length} open</span>
+      </div>
+      <div className="queue-list">
+        {proposals.map((p) => (
+          <div key={p.id} className="queue-item">
+            <span className="queue-task">{p.taskRef}</span>
+            <span className="meta">{p.agentId}</span>
+            <span className={`status ${STATUS_CLASS[p.status] ?? ''}`}>{p.status}</span>
+            <span className="meta">
+              {(p.claims ?? []).length} claims · {(p.attestations ?? []).length} gates
+            </span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function InterventionDrawer({
   interventions,
   onResolved,
@@ -161,9 +196,17 @@ export default function App() {
   const [simulating, setSimulating] = useState(false);
   const [simError, setSimError] = useState<string | null>(null);
 
-  const allAttestations: { a: Attestation; agentId: string }[] = proposals.flatMap((p: ChangeProposal) =>
-    (p.attestations ?? []).map((a) => ({ a, agentId: p.agentId })),
-  );
+  const allAttestations: { a: Attestation; agentId: string }[] = [...proposals]
+    .sort((x, y) => y.updatedAt - x.updatedAt)
+    .flatMap((p: ChangeProposal) =>
+      (p.attestations ?? []).map((a) => ({ a, agentId: p.agentId })),
+    )
+    .sort((x, y) => y.a.signedAt - x.a.signedAt)
+    .slice(0, 8);
+
+  const openProposals = [...proposals]
+    .filter((p) => !['merged', 'rejected', 'expired'].includes(p.status))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   const doSimulate = async () => {
     setSimulating(true);
@@ -228,7 +271,7 @@ export default function App() {
           )}
         </Panel>
 
-        <Panel title="2. Gate Attestations" icon="⚡" badge="HMAC SHA-256">
+        <Panel title="2. Gate Attestations" icon="⚡" badge={`${allAttestations.length} latest · HMAC`}>
           {allAttestations.length === 0 ? (
             <Empty>Awaiting gate runs</Empty>
           ) : (
@@ -238,7 +281,7 @@ export default function App() {
           )}
         </Panel>
 
-        <Panel title="3. Epistemic Memory" icon="🧠" badge=".git/learnings">
+        <Panel title="3. Epistemic Memory" icon="🧠" badge="learnings/">
           {learnings.length === 0 ? (
             <Empty>No learnings crystallized</Empty>
           ) : (
@@ -249,9 +292,10 @@ export default function App() {
 
       <InterventionDrawer interventions={interventions} onResolved={refresh} />
 
+      <MergeQueue proposals={openProposals} />
+
       <footer className="footer">
-        Merge queue: {proposals.filter((p) => !['merged', 'rejected', 'expired'].includes(p.status)).length} open proposals ·{' '}
-        {proposals.length} total
+        {openProposals.length} open · {proposals.length} total proposals · Tributary Radar
       </footer>
     </div>
   );
