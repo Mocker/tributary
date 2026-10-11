@@ -6,6 +6,7 @@ import { ChangeProposal, Claim, Attestation, InterventionCard, SymbolIndex, Lear
 import { signAttestation, verifyAttestation } from './core/attestation';
 import { evaluateMergeGate } from './core/merge-gate';
 import { generateLearningMarkdown, generateLearningFilename } from './core/learnings';
+import { generateApiKey, sha256hex, apiKeyKvKey, ApiKeyRecord } from './core/api-keys';
 import http from 'isomorphic-git/http/web';
 import { MemoryFS } from './memory-fs';
 import {
@@ -18,7 +19,7 @@ import {
 export { ChangeProposalDO } from './do/change-proposal';
 export { CoordinatorDO } from './do/coordinator';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<{ Bindings: Env; Variables: { agentId: string } }>();
 
 app.use('*', cors());
 
@@ -195,16 +196,41 @@ app.get('/health', (c) => {
 // V1 API Surface
 // -------------------------------------------------------------
 
+// Agent authentication: every mutating /v1 route requires a Bearer API key
+// (minted via POST /v1/admin/keys). Reads stay open so the radar is browsable;
+// /v1/admin/* stays open as demo tooling for the competition.
+app.use('/v1/*', async (c, next) => {
+  if (c.req.method === 'GET' || c.req.method === 'HEAD' || c.req.method === 'OPTIONS') {
+    return next();
+  }
+  if (c.req.path.startsWith('/v1/admin/')) {
+    return next();
+  }
+  const header = c.req.header('Authorization');
+  const key = header?.replace(/^Bearer\s+/i, '');
+  if (!key) {
+    return c.json({ error: 'Missing API key', code: 'unauthorized' }, 401);
+  }
+  const hash = await sha256hex(key);
+  const record = (await c.env.TRIBUTARY_KV.get(apiKeyKvKey(hash), 'json')) as ApiKeyRecord | null;
+  if (!record || record.revoked) {
+    return c.json({ error: 'Invalid API key', code: 'unauthorized' }, 401);
+  }
+  c.set('agentId', record.agentId);
+  await next();
+});
+
 // 1. POST /v1/proposals — Fork baseline, mint token, spawn DO
 app.post('/v1/proposals', async (c) => {
-  const { baseline = 'demo-shop', taskRef, agentId } = await c.req.json<{
+  const { baseline = 'demo-shop', taskRef } = await c.req.json<{
     baseline: string;
     taskRef: string;
-    agentId: string;
   }>();
+  // Identity comes from the API key — clients can no longer self-assert agentId.
+  const agentId = c.get('agentId');
 
-  if (!agentId || !taskRef) {
-    return c.json({ error: 'agentId and taskRef are required' }, 400);
+  if (!taskRef) {
+    return c.json({ error: 'taskRef is required' }, 400);
   }
 
   const proposalId = ulid();
@@ -613,6 +639,42 @@ app.post('/v1/interventions/:id/resolve', async (c) => {
   } catch { /* bus broadcast is best-effort */ }
 
   return c.json({ success: true, intervention: card });
+});
+
+// 15a. POST /v1/admin/keys — Mint an API key for an agent.
+// The raw key is returned once and never stored; only its SHA-256 hash lives
+// in KV. Admin route (open) — in production this needs its own auth.
+app.post('/v1/admin/keys', async (c) => {
+  const { agentId, name } = await c.req.json<{ agentId: string; name?: string }>();
+  if (!agentId) {
+    return c.json({ error: 'agentId is required' }, 400);
+  }
+  const apiKey = generateApiKey();
+  const hash = await sha256hex(apiKey);
+  const record: ApiKeyRecord = {
+    agentId,
+    name,
+    createdAt: new Date().toISOString(),
+    revoked: false,
+  };
+  await c.env.TRIBUTARY_KV.put(apiKeyKvKey(hash), JSON.stringify(record));
+  return c.json({ agentId, apiKey, createdAt: record.createdAt }, 201);
+});
+
+// 15b. POST /v1/admin/keys/revoke — Revoke an API key.
+app.post('/v1/admin/keys/revoke', async (c) => {
+  const { apiKey } = await c.req.json<{ apiKey: string }>();
+  if (!apiKey) {
+    return c.json({ error: 'apiKey is required' }, 400);
+  }
+  const hash = await sha256hex(apiKey);
+  const record = (await c.env.TRIBUTARY_KV.get(apiKeyKvKey(hash), 'json')) as ApiKeyRecord | null;
+  if (!record) {
+    return c.json({ error: 'Key not found' }, 404);
+  }
+  record.revoked = true;
+  await c.env.TRIBUTARY_KV.put(apiKeyKvKey(hash), JSON.stringify(record));
+  return c.json({ revoked: true, agentId: record.agentId });
 });
 
 // 15. POST /v1/admin/seed — Ensure the baseline repo exists in Artifacts and
