@@ -13,9 +13,11 @@
     "test": "tsx --test test/*.test.ts",
     "simulate": "tsx scripts/run-demo-script.ts",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "seed": "tsx scripts/seed-baseline.ts"
+    "seed": "tsx scripts/seed-baseline.ts",
+    "mcp": "tsx scripts/mcp-server.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "hono": "^4.6.0",
     "isomorphic-git": "^1.43.3",
     "ulid": "^2.4.0",
