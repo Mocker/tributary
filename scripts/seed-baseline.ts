@@ -29,10 +29,15 @@ function sh(cmd: string, args: string[], cwd?: string): string {
   return execFileSync(cmd, args, { cwd, stdio: 'pipe', encoding: 'utf8' });
 }
 
+function hasArg(name: string): boolean {
+  return process.argv.includes(`--${name}`);
+}
+
 const worker = arg('worker', 'http://localhost:8787').replace(/\/$/, '');
 const baseline = arg('baseline', 'demo-shop');
 const dir = resolve(arg('dir', './demo-shop'));
 const account = arg('account', '162681bef56337d181bf689c4b77268c');
+const force = hasArg('force');
 
 console.log(`Seeding baseline '${baseline}' from ${dir} via ${worker} ...`);
 
@@ -68,15 +73,31 @@ try {
   git([...ident, 'commit', '-m', `seed: ${baseline} baseline`, '--quiet']);
 
   const header = `http.extraHeader=Authorization: Bearer ${seed.token}`;
+
+  // Check if remote already contains commits
+  let existingHead: string | null = null;
   try {
-    sh('git', ['-c', header, 'push', remote, 'HEAD:main'], tmp);
-    console.log('push: ok');
-  } catch (e: any) {
-    const out: string = String(e.stdout ?? '') + String(e.stderr ?? '');
-    if (/up[- ]to[- ]date/i.test(out)) {
-      console.log('push: remote already has this commit — nothing to do.');
-    } else {
-      throw e;
+    const lsInit = sh('git', ['-c', header, 'ls-remote', remote, 'HEAD'], tmp).trim();
+    if (lsInit) existingHead = lsInit.split(/\s/)[0];
+  } catch {
+    /* new or empty repo */
+  }
+
+  if (existingHead && !force) {
+    console.log(`push: remote already seeded with HEAD ${existingHead.slice(0, 12)} — nothing to do.`);
+    console.log(`      (pass --force to overwrite baseline from local ${dir})`);
+  } else {
+    try {
+      const pushArgs = ['-c', header, 'push', ...(force ? ['--force'] : []), remote, 'HEAD:main'];
+      sh('git', pushArgs, tmp);
+      console.log(`push: ${force ? 'force-pushed clean baseline' : 'ok'}`);
+    } catch (e: any) {
+      const out: string = String(e.stdout ?? '') + String(e.stderr ?? '');
+      if (/up[- ]to[- ]date/i.test(out)) {
+        console.log('push: remote already has this commit — nothing to do.');
+      } else {
+        throw e;
+      }
     }
   }
 
