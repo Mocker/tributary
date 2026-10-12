@@ -273,6 +273,16 @@ See full tool schemas and documentation in [docs/mcp.md](docs/mcp.md).
 
 ---
 
+## 👤 Author
+
+**Ryan Guthrie** — Senior Software Engineer / Systems Architect, building agent infrastructure on Cloudflare.
+
+- 🌐 [ryanguthrie.com](https://ryanguthrie.com) — portfolio & résumé
+- 💼 Open to remote senior backend / platform roles
+- 💖 [Sponsor @Mocker on GitHub](https://github.com/sponsors/Mocker) — if Tributary is useful to you
+
+---
+
 ## 📄 License
 
 MIT License. Copyright (c) 2026 Ryan Guthrie.
