@@ -57,6 +57,26 @@ agents (any client: scripts, MCP clients, IDE agents)
 
 ---
 
+## ⚡ Why Cloudflare Artifacts? (The Substrate Advantage)
+
+Tributary is not merely "hosted on Cloudflare" — **it fundamentally could not exist on traditional Git hosting or GitHub**:
+
+```text
+Legacy Git / GitHub                     Cloudflare Artifacts + Tributary
+──────────────────────────────────      ────────────────────────────────────────
+Heavyweight forks (3–15s queues)        Sub-200ms edge micro-forks (repo.fork)
+Broad, long-lived PATs / OAuth          Task-scoped auto-expiring write tokens
+Centralized storage → CI transit        Edge co-located: Workers + DOs + Artifacts
+Textual 3-way merge conflicts           Claim-time atomic overlap prevention (CoordinatorDO)
+Human PR review bottlenecks             Deterministic gates emitting HMAC attestations
+Epistemic memory lost in PR comments    Durable rules synthesized into git history (learnings/)
+```
+
+> **The Scale Thesis:** *"Forking a repository per agent task is fast enough (~130ms median) that running 10,000 concurrent agent runs is an addressing problem, not a storage bottleneck."*  
+> See the deep-dive whitepaper: [docs/why-cloudflare-artifacts.md](docs/why-cloudflare-artifacts.md).
+
+---
+
 ## 🛠️ Repository Layout
 
 ```text
@@ -64,6 +84,8 @@ tributary/
 ├── docs/
 │   ├── BUILD_PLAN.md               # Complete competition handoff and build plan
 │   ├── CLOUDFLARE_CHALLENGE_REVIEW.md # Competition review & judging rubric alignment
+│   ├── why-cloudflare-artifacts.md # Whitepaper: why Artifacts is the only viable substrate
+│   ├── mcp.md                      # Model Context Protocol (MCP) server reference
 │   ├── decisions.md                # Architectural decisions log (1 line per decision)
 │   ├── artifacts-notes.md          # Cloudflare Artifacts capabilities and verified behavior
 │   ├── repos.md                    # Namespace and baseline/fork lifecycle design
@@ -87,6 +109,8 @@ tributary/
 │   │   ├── physical-merge.ts       # Real git merge in-Worker (isomorphic-git)
 │   │   ├── api-keys.ts             # Per-agent API key issuance & verification
 │   │   └── learnings.ts            # Epistemic memory note generator
+│   ├── mcp/
+│   │   └── server.ts               # Model Context Protocol (MCP) server implementation
 │   ├── memory-fs.ts                # In-memory FS for isomorphic-git in Workers
 │   └── do/
 │       ├── coordinator.ts          # CoordinatorDO: global atomic claim index
@@ -102,11 +126,13 @@ tributary/
 │   ├── attestation.test.ts         # Cryptographic signing tests
 │   ├── merge-gate.test.ts          # Merge gating and CAS tests
 │   ├── merge-invariants.test.ts    # Z3 solver machine-checked invariants
+│   ├── mcp.test.ts                 # Model Context Protocol (MCP) tool tests
 │   ├── physical-merge.test.ts      # Real merge scenarios against local git
 │   ├── api-keys.test.ts            # API key generation & hashing
 │   └── coordinator.test.ts         # Global claim index tests
 ├── scripts/
 │   ├── run-demo-script.ts          # Rehearses the complete 6-act competition video demo
+│   ├── mcp-server.ts               # Standalone MCP stdio server entrypoint
 │   └── seed-baseline.ts            # Seeds baseline repos into Artifacts via git smart-HTTP
 ├── wrangler.jsonc                  # Cloudflare Workers + Artifacts + DO + Assets config
 ├── LICENSE                         # MIT License
@@ -201,6 +227,38 @@ Tributary is client-agnostic. Any coding agent (Claude Code, Cursor, Pi, Aider, 
    `POST /v1/proposals/:id/gates/test/run { commitSha }`.
    The gate runs deterministic invariants and returns an HMAC-signed attestation.
 6. **In-Worker Physical Merge:** The agent merges via `POST /v1/proposals/:id/merge`. The Worker evaluates the CAS guard, executes the merge commit in memory via `isomorphic-git`, commits any synthesized failure rules to `learnings/`, and pushes directly to the Artifacts baseline.
+
+### 🔌 Native Model Context Protocol (MCP) Server
+
+Tributary includes a first-class **Model Context Protocol (MCP)** server (`@modelcontextprotocol/sdk`) for coding agents like Claude Desktop, Cursor, Pi, and Aider. The MCP server exposes Tributary's coordination primitives as 10 callable tools over stdio:
+
+```bash
+# Run the local MCP server over stdio
+npm run mcp
+```
+
+Add to Cursor or Claude Desktop (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "tributary": {
+      "command": "npx",
+      "args": ["-y", "tsx", "scripts/mcp-server.ts"],
+      "cwd": "/path/to/tributary",
+      "env": {
+        "TRIBUTARY_URL": "https://tributary.sokercap.workers.dev"
+      }
+    }
+  }
+}
+```
+
+When an agent attempts an overlapping claim, Tributary returns an actionable prompt payload directly to the LLM context:
+> `🚨 CLAIM OVERLAP REJECTED (HTTP 409)`  
+> `Reason: "conflicts with Agent A (Auth)'s claim on src/session.ts (symbol createSession)"`  
+> `Action required: Zero compute wasted! Narrow your claim paths/symbols before writing code.`
+
+See full tool schemas and documentation in [docs/mcp.md](docs/mcp.md).
 
 ---
 
