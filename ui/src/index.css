@@ -256,3 +256,16 @@ body {
 }
 
 .footer { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--faint); font-size: 12px; text-align: center; }
+
+.key-input {
+  background: #0f172a;
+  border: 1px solid #334155;
+  color: #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  width: 180px;
+  font-family: monospace;
+}
+.key-input::placeholder { color: #64748b; }
+.key-input:focus { outline: none; border-color: #38bdf8; }

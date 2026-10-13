@@ -756,6 +756,12 @@ app.post('/v1/admin/seed', async (c) => {
   }, created ? 201 : 200);
 });
 
+// 13b. POST /v1/admin/reset — Clear demo state (claims + interventions).
+app.post('/v1/admin/reset', async (c) => {
+  await coordPost(c.env, '/reset', {});
+  return c.json({ success: true, message: 'Demo state cleared.' });
+});
+
 // 14. POST /v1/admin/simulate — Scripted swarm-collision scenario.
 //
 // The scenario itself is synthetic (scripted agents, no Artifacts forks), but
@@ -857,6 +863,19 @@ app.post('/v1/admin/simulate', async (c) => {
       createdAt: now,
     };
     await coordPost(c.env, '/interventions', { card: interventionCard });
+  }
+
+  const mode = c.req.query('mode') || 'demo';
+  // In demo mode, stop after the 409 so the dashboard shows the conflict
+  // state clearly: A claimed, B blocked, intervention pending.
+  if (mode === 'demo') {
+    return c.json({
+      success: true,
+      mode: 'demo',
+      message: 'Swarm collision staged: Agent A holds src/auth/**, Agent B blocked on src/session.ts.',
+      proposalIds: [propA.id, propB.id],
+      interventionId: interventionCard?.id,
+    });
   }
 
   // Step 3: Agent B narrows to src/billing/** and proceeds

@@ -71,6 +71,35 @@ export interface ClaimRejectedEvent {
 // ---------------------------------------------------------------------------
 // REST helpers (same-origin: the Worker serves ui/dist alongside /v1)
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// API key (stored in localStorage, sent as Bearer on mutating calls)
+// ---------------------------------------------------------------------------
+const KEY_STORAGE = 'tributary_api_key';
+
+export function getApiKey(): string | null {
+  try {
+    return localStorage.getItem(KEY_STORAGE);
+  } catch {
+    return null;
+  }
+}
+
+export function setApiKey(key: string | null): void {
+  try {
+    if (key) localStorage.setItem(KEY_STORAGE, key);
+    else localStorage.removeItem(KEY_STORAGE);
+  } catch {
+    /* ignore */
+  }
+}
+
+function authHeaders(): Record<string, string> {
+  const key = getApiKey();
+  const h: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (key) h['Authorization'] = `Bearer ${key}`;
+  return h;
+}
+
 async function getJSON<T>(path: string): Promise<T> {
   const res = await fetch(path);
   if (!res.ok) throw new Error(`${path} -> ${res.status}`);
@@ -100,15 +129,26 @@ export async function fetchInterventions(): Promise<InterventionCard[]> {
 export async function resolveIntervention(id: string, decision: 'approve' | 'reject'): Promise<void> {
   const res = await fetch(`/v1/interventions/${id}/resolve`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ decision }),
   });
   if (!res.ok) throw new Error(`resolve -> ${res.status}`);
 }
 
 export async function runSimulation(): Promise<void> {
-  const res = await fetch('/v1/admin/simulate', { method: 'POST' });
+  const res = await fetch('/v1/admin/simulate?mode=demo', {
+    method: 'POST',
+    headers: authHeaders(),
+  });
   if (!res.ok) throw new Error(`simulate -> ${res.status}`);
+}
+
+export async function resetDemo(): Promise<void> {
+  const res = await fetch('/v1/admin/reset', {
+    method: 'POST',
+    headers: authHeaders(),
+  });
+  if (!res.ok) throw new Error(`reset -> ${res.status}`);
 }
 
 // ---------------------------------------------------------------------------
