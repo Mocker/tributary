@@ -594,7 +594,10 @@ app.get('/v1/proposals/:id/events', async (c) => {
   const proposalId = c.req.param('id');
   const doId = c.env.CHANGE_PROPOSAL_DO.idFromName(proposalId);
   const stub = c.env.CHANGE_PROPOSAL_DO.get(doId);
-  return stub.fetch(c.req.raw);
+  // The DO matches pathname === '/events' exactly; rewrite before forwarding.
+  const url = new URL(c.req.url);
+  url.pathname = '/events';
+  return stub.fetch(new Request(url, c.req.raw));
 });
 
 // 9. GET /v1/learnings — List .git/learnings/ entries
