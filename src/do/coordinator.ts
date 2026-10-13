@@ -145,6 +145,13 @@ export class CoordinatorDO {
         return json({ claims: this.liveClaims(all) });
       }
 
+      // ---------------- reset (demo) ----------------
+      if (path === '/reset' && method === 'POST') {
+        await this.save('claims', {});
+        await this.save('interventions', {});
+        return json({ success: true, cleared: ['claims', 'interventions'] });
+      }
+
       // ---------------- interventions ----------------
       if (path === '/interventions' && method === 'POST') {
         const { card } = await request.json<{ card: InterventionCard }>();

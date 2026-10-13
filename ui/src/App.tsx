@@ -3,6 +3,9 @@ import {
   useRadar,
   resolveIntervention,
   runSimulation,
+  resetDemo,
+  getApiKey,
+  setApiKey,
   type Attestation,
   type ChangeProposal,
   type Claim,
@@ -280,6 +283,26 @@ export default function App() {
   const [simulating, setSimulating] = useState(false);
   const [simError, setSimError] = useState<string | null>(null);
   const [showTour, setShowTour] = useState(false);
+  const [apiKey, setApiKeyState] = useState<string>(() => getApiKey() ?? '');
+  const [resetting, setResetting] = useState(false);
+
+  const saveKey = (v: string) => {
+    setApiKeyState(v);
+    setApiKey(v.trim() || null);
+  };
+
+  const doReset = async () => {
+    setResetting(true);
+    setSimError(null);
+    try {
+      await resetDemo();
+      await refresh();
+    } catch (e) {
+      setSimError(e instanceof Error ? e.message : 'reset failed');
+    } finally {
+      setResetting(false);
+    }
+  };
 
   const allAttestations: { a: Attestation; agentId: string }[] = [...proposals]
     .sort((x, y) => y.updatedAt - x.updatedAt)
@@ -330,6 +353,17 @@ export default function App() {
           <button className="btn simulate" onClick={doSimulate} disabled={simulating}>
             {simulating ? '⏳ Simulating…' : '▶️ Run Swarm Simulation'}
           </button>
+          <button className="btn" onClick={doReset} disabled={resetting}>
+            {resetting ? '⏳ Resetting…' : '🧹 Reset Demo'}
+          </button>
+          <input
+            className="key-input"
+            type="password"
+            placeholder="trib_… API key"
+            value={apiKey}
+            onChange={(e) => saveKey(e.target.value)}
+            title="API key for mutating actions (stored locally)"
+          />
         </div>
       </header>
       {simError && <div className="error">{simError}</div>}
