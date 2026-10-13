@@ -785,6 +785,26 @@ app.post('/v1/admin/simulate', async (c) => {
   await coordPost(c.env, '/proposals', { proposal: propA });
   await coordPost(c.env, '/proposals', { proposal: propB });
 
+  // Initialize ChangeProposal DOs so the SSE events endpoint works for
+  // simulated proposals (the events route proxies straight to the DO).
+  for (const prop of [propA, propB]) {
+    const simDoId = c.env.CHANGE_PROPOSAL_DO.idFromName(prop.id);
+    const simStub = c.env.CHANGE_PROPOSAL_DO.get(simDoId);
+    await simStub.fetch(
+      new Request('http://internal/init', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: prop.id,
+          baselineRepo: prop.baselineRepo,
+          forkRepo: prop.forkRepo,
+          agentId: prop.agentId,
+          taskRef: prop.taskRef,
+        }),
+      })
+    );
+  }
+
   // Step 1: Agent A claims auth + createSession via the real atomic declare
   const claimA: Claim = {
     id: `claim_${ulid().slice(-6)}`,
