@@ -18,6 +18,8 @@ Git’s collaboration primitives — branches, textual 3-way merges, human pull 
 
 **Git finds out about conflicts at merge time. Tributary finds out at claim time.**
 
+> **Why now:** On October 13, 2026, Anthropic [confirmed the diagnosis](https://www.anthropic.com/engineering/redesigning-source-control) — agent-written code drove their monorepo from 2,500 to 30,000 merges/day, breaking git's offline-first model ("the bottleneck, now, is all of the developer infrastructure built for human scale"). Tributary is the coordination layer for that world.
+
 ---
 
 ## 🚀 The Pillars of Tributary
