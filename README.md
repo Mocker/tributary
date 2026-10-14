@@ -4,7 +4,7 @@
 > *Target Competition:* Cloudflare Challenge **"Build the next GitHub"**  
 > *Submission Deadline:* **October 14, 2026, 11:59 PM PDT**  
 > *Live Edge Deployment:* **[https://tributary.sokercap.workers.dev](https://tributary.sokercap.workers.dev)** (Workers + Artifacts + Durable Objects)  
-> *Demo Video:* **[🎬 6-Minute Walkthrough Video](https://youtu.be/placeholder-tributary-demo)** *(Competition Submission)*  
+> *Demo Video:* **🎬 6-Minute Walkthrough Video** *(submitted directly with the competition entry — Oct 14, 2026)*  
 > *License:* **MIT** (see [LICENSE](LICENSE))
 
 ---
